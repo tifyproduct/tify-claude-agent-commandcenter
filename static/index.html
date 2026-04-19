@@ -41,8 +41,14 @@
           <p class="text-sm text-indigo-400 font-medium">Command Center</p>
         </div>
       </div>
-      <p class="text-gray-400 text-sm text-center mb-6">Enter your API key to continue</p>
+      <p class="text-gray-400 text-sm text-center mb-6">Enter your backend URL and API key to continue</p>
       <form @submit.prevent="login()">
+        <input
+          type="url"
+          x-model="backendUrl"
+          placeholder="Backend URL (e.g. http://213.136.91.212:8080)"
+          class="w-full bg-gray-700 border border-gray-600 rounded-lg px-4 py-3 text-gray-100 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent mb-3"
+        />
         <input
           type="password"
           x-model="loginKey"
@@ -784,6 +790,7 @@ function app() {
     // Auth
     authenticated: false,
     loginKey: '',
+    backendUrl: localStorage.getItem('tify_backend_url') || '',
     loginError: '',
 
     // Layout
@@ -836,8 +843,10 @@ function app() {
     // ── Init ──
     init() {
       const key = localStorage.getItem('tify_api_key');
-      if (key) {
+      const url = localStorage.getItem('tify_backend_url');
+      if (key && url) {
         this.loginKey = key;
+        this.backendUrl = url;
         this.authenticated = true;
         this.loadAll();
         this.startAutoRefresh();
@@ -862,10 +871,14 @@ function app() {
     // ── Auth ──
     async login() {
       this.loginError = '';
+      if (!this.backendUrl) { this.loginError = 'Please enter the backend URL.'; return; }
+      const base = this.backendUrl.replace(/\/$/, '');
       try {
-        const res = await this.api('/api/agents');
+        const res = await this.api('/api/agents', {}, base);
         if (res.ok) {
           localStorage.setItem('tify_api_key', this.loginKey);
+          localStorage.setItem('tify_backend_url', base);
+          this.backendUrl = base;
           this.authenticated = true;
           await this.loadAll();
           this.startAutoRefresh();
@@ -873,24 +886,27 @@ function app() {
           this.loginError = 'Invalid API key. Please try again.';
         }
       } catch (e) {
-        this.loginError = 'Connection failed. Is the server running?';
+        this.loginError = 'Connection failed. Check the backend URL and try again.';
       }
     },
 
     logout() {
       localStorage.removeItem('tify_api_key');
+      localStorage.removeItem('tify_backend_url');
       this.authenticated = false;
       this.loginKey = '';
+      this.backendUrl = '';
     },
 
     // ── HTTP ──
-    async api(path, opts = {}) {
+    async api(path, opts = {}, baseOverride) {
+      const base = (baseOverride ?? this.backendUrl ?? localStorage.getItem('tify_backend_url') ?? '').replace(/\/$/, '');
       const headers = {
         'Content-Type': 'application/json',
         'X-API-Key': this.loginKey || localStorage.getItem('tify_api_key') || '',
         ...(opts.headers || {}),
       };
-      return fetch(path, { ...opts, headers });
+      return fetch(base + path, { ...opts, headers });
     },
 
     async apiJSON(path, opts = {}) {
@@ -1220,7 +1236,8 @@ function app() {
 
     async downloadFile(file) {
       if (!this.selectedAgent) return;
-      const url = `/api/agents/${this.selectedAgent.instance_id}/files/download?path=${encodeURIComponent(file.path)}`;
+      const base = (this.backendUrl || localStorage.getItem('tify_backend_url') || '').replace(/\/$/, '');
+      const url = `${base}/api/agents/${this.selectedAgent.instance_id}/files/download?path=${encodeURIComponent(file.path)}`;
       const key = this.loginKey || localStorage.getItem('tify_api_key') || '';
       try {
         const res = await fetch(url, { headers: { 'X-API-Key': key } });
