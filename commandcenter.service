@@ -1,0 +1,15 @@
+[Unit]
+Description=Tify Agent Command Center
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/tify-commandcenter
+EnvironmentFile=/opt/tify-commandcenter/.env
+ExecStart=/opt/telegram-claude-bot/venv/bin/python main.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,1288 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tify Agent Command Center</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+  <style>
+    [x-cloak] { display: none !important; }
+    .scrollbar-thin::-webkit-scrollbar { width: 4px; }
+    .scrollbar-thin::-webkit-scrollbar-track { background: #1f2937; }
+    .scrollbar-thin::-webkit-scrollbar-thumb { background: #4b5563; border-radius: 2px; }
+    .log-output { font-family: 'Courier New', monospace; font-size: 0.75rem; line-height: 1.4; }
+    .bubble-user { background: #4f46e5; border-radius: 18px 18px 4px 18px; }
+    .bubble-assistant { background: #1f2937; border-radius: 18px 18px 18px 4px; border: 1px solid #374151; }
+  </style>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            brand: { DEFAULT: '#6366f1', dark: '#4f46e5', light: '#818cf8' }
+          }
+        }
+      }
+    }
+  </script>
+</head>
+
+<body class="h-full bg-gray-900 text-gray-100" x-data="app()" x-init="init()" x-cloak>
+
+<!-- ═══════════════════ LOGIN SCREEN ═══════════════════ -->
+<div x-show="!authenticated" class="min-h-screen flex items-center justify-center bg-gray-900">
+  <div class="w-full max-w-sm">
+    <div class="bg-gray-800 rounded-2xl shadow-2xl p-8 border border-gray-700">
+      <div class="flex items-center justify-center mb-6 gap-3">
+        <span class="text-4xl">🤖</span>
+        <div>
+          <h1 class="text-xl font-bold text-gray-100">Tify Agent</h1>
+          <p class="text-sm text-indigo-400 font-medium">Command Center</p>
+        </div>
+      </div>
+      <p class="text-gray-400 text-sm text-center mb-6">Enter your API key to continue</p>
+      <form @submit.prevent="login()">
+        <input
+          type="password"
+          x-model="loginKey"
+          placeholder="API Key"
+          class="w-full bg-gray-700 border border-gray-600 rounded-lg px-4 py-3 text-gray-100 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent mb-4"
+          autofocus
+        />
+        <button
+          type="submit"
+          class="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-3 rounded-lg transition-colors"
+        >
+          Sign In
+        </button>
+      </form>
+      <p x-show="loginError" class="text-red-400 text-sm text-center mt-3" x-text="loginError"></p>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════ MAIN DASHBOARD ═══════════════════ -->
+<div x-show="authenticated" class="flex flex-col h-screen">
+
+  <!-- TOP BAR -->
+  <header class="bg-gray-800 border-b border-gray-700 px-6 py-3 flex items-center justify-between shrink-0">
+    <div class="flex items-center gap-3">
+      <span class="text-2xl">🤖</span>
+      <div>
+        <h1 class="text-base font-bold text-gray-100 leading-none">Tify Agent Command Center</h1>
+        <p class="text-xs text-gray-500 mt-0.5">Telegram Claude Bot Manager</p>
+      </div>
+    </div>
+    <div class="flex items-center gap-4">
+      <!-- Quick status pills -->
+      <div class="hidden sm:flex items-center gap-2">
+        <template x-for="a in agents" :key="a.instance_id">
+          <span
+            class="flex items-center gap-1.5 text-xs px-2 py-1 rounded-full border"
+            :class="a.status === 'active' ? 'bg-green-900/40 border-green-700 text-green-400' : 'bg-red-900/40 border-red-700 text-red-400'"
+          >
+            <span class="w-1.5 h-1.5 rounded-full" :class="a.status === 'active' ? 'bg-green-400' : 'bg-red-400'"></span>
+            <span x-text="a.instance_id"></span>
+          </span>
+        </template>
+      </div>
+      <button @click="logout()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors">Sign out</button>
+    </div>
+  </header>
+
+  <!-- BODY: Sidebar + Content -->
+  <div class="flex flex-1 overflow-hidden">
+
+    <!-- SIDEBAR -->
+    <aside class="w-52 bg-gray-800 border-r border-gray-700 flex flex-col shrink-0 overflow-y-auto scrollbar-thin">
+      <!-- Agents section -->
+      <div class="px-3 pt-4 pb-2">
+        <p class="text-xs font-semibold text-gray-500 uppercase tracking-wider px-2 mb-2">Agents</p>
+        <template x-for="agent in agents" :key="agent.instance_id">
+          <button
+            @click="selectAgent(agent)"
+            class="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors text-left mb-0.5"
+            :class="selectedAgent?.instance_id === agent.instance_id && currentPage === 'agent'
+              ? 'bg-indigo-600 text-white'
+              : 'text-gray-300 hover:bg-gray-700'"
+          >
+            <span
+              class="w-2 h-2 rounded-full shrink-0"
+              :class="agent.status === 'active' ? 'bg-green-400' : 'bg-red-400'"
+            ></span>
+            <span class="truncate" x-text="agent.bot_name || agent.instance_id"></span>
+          </button>
+        </template>
+
+        <!-- Add Agent -->
+        <button
+          @click="openAddAgentModal()"
+          class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-indigo-400 hover:bg-gray-700 hover:text-indigo-300 transition-colors mt-1"
+        >
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+          </svg>
+          Add Agent
+        </button>
+      </div>
+
+      <!-- Divider -->
+      <div class="mx-4 border-t border-gray-700 my-2"></div>
+
+      <!-- Nav items -->
+      <div class="px-3 pb-4 space-y-0.5">
+        <button
+          @click="navigate('skills')"
+          class="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors text-left"
+          :class="currentPage === 'skills' ? 'bg-indigo-600 text-white' : 'text-gray-300 hover:bg-gray-700'"
+        >
+          <span>🧩</span> Skills
+        </button>
+        <button
+          @click="navigate('status')"
+          class="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors text-left"
+          :class="currentPage === 'status' ? 'bg-indigo-600 text-white' : 'text-gray-300 hover:bg-gray-700'"
+        >
+          <span>🖥️</span> VPS Status
+        </button>
+      </div>
+    </aside>
+
+    <!-- MAIN CONTENT -->
+    <main class="flex-1 overflow-y-auto bg-gray-900 scrollbar-thin">
+
+      <!-- Empty state -->
+      <div x-show="currentPage === 'home'" class="flex items-center justify-center h-full">
+        <div class="text-center text-gray-600">
+          <span class="text-6xl block mb-4">🤖</span>
+          <p class="text-lg font-medium text-gray-500">Select an agent or page from the sidebar</p>
+        </div>
+      </div>
+
+      <!-- ─── AGENT DETAIL ─── -->
+      <div x-show="currentPage === 'agent' && selectedAgent" class="h-full flex flex-col">
+        <!-- Agent header -->
+        <div class="bg-gray-800 border-b border-gray-700 px-6 py-4 flex items-center justify-between shrink-0">
+          <div class="flex items-center gap-3">
+            <div>
+              <h2 class="text-lg font-bold text-gray-100" x-text="selectedAgent?.bot_name"></h2>
+              <p class="text-xs text-gray-400" x-text="'@' + (selectedAgent?.instance_id || '')"></p>
+            </div>
+            <span
+              class="px-2.5 py-0.5 rounded-full text-xs font-semibold"
+              :class="selectedAgent?.status === 'active'
+                ? 'bg-green-900/60 text-green-400 border border-green-700'
+                : 'bg-red-900/60 text-red-400 border border-red-700'"
+              x-text="selectedAgent?.status || 'unknown'"
+            ></span>
+          </div>
+          <button
+            @click="restartAgent(selectedAgent?.instance_id)"
+            class="flex items-center gap-2 px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm transition-colors"
+            :disabled="restarting"
+          >
+            <svg class="w-4 h-4" :class="restarting ? 'animate-spin' : ''" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+            <span x-text="restarting ? 'Restarting…' : 'Restart'"></span>
+          </button>
+        </div>
+
+        <!-- Agent Tabs -->
+        <div class="bg-gray-800 border-b border-gray-700 px-6 shrink-0">
+          <nav class="flex gap-1 -mb-px">
+            <template x-for="tab in ['overview','memory','cron','files','logs']" :key="tab">
+              <button
+                @click="agentTab = tab; onTabChange(tab)"
+                class="px-4 py-3 text-sm font-medium border-b-2 transition-colors capitalize"
+                :class="agentTab === tab
+                  ? 'border-indigo-500 text-indigo-400'
+                  : 'border-transparent text-gray-400 hover:text-gray-300 hover:border-gray-600'"
+                x-text="tab"
+              ></button>
+            </template>
+          </nav>
+        </div>
+
+        <!-- Tab content -->
+        <div class="flex-1 overflow-y-auto p-6 scrollbar-thin">
+
+          <!-- Overview Tab -->
+          <div x-show="agentTab === 'overview'" class="max-w-2xl space-y-6">
+            <!-- Info cards -->
+            <div class="grid grid-cols-2 gap-4">
+              <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                <p class="text-xs text-gray-500 mb-1">Preset</p>
+                <p class="font-semibold capitalize" x-text="selectedAgent?.preset || '—'"></p>
+              </div>
+              <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                <p class="text-xs text-gray-500 mb-1">Model</p>
+                <p class="font-semibold" x-text="selectedAgent?.model || '—'"></p>
+              </div>
+              <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                <p class="text-xs text-gray-500 mb-1">Model Type</p>
+                <p class="font-semibold capitalize" x-text="selectedAgent?.model_type || '—'"></p>
+              </div>
+              <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+                <p class="text-xs text-gray-500 mb-1">Owner ID</p>
+                <p class="font-semibold font-mono text-sm" x-text="selectedAgent?.owner_id || '—'"></p>
+              </div>
+            </div>
+
+            <!-- Edit form -->
+            <div class="bg-gray-800 rounded-xl border border-gray-700 p-6">
+              <h3 class="text-sm font-semibold text-gray-300 mb-4">Edit Configuration</h3>
+              <form @submit.prevent="saveAgent()" class="space-y-4">
+                <div>
+                  <label class="block text-xs text-gray-400 mb-1">Bot Name</label>
+                  <input x-model="editForm.bot_name" type="text"
+                    class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                </div>
+                <div>
+                  <label class="block text-xs text-gray-400 mb-1">Bot Token</label>
+                  <input x-model="editForm.bot_token" type="password"
+                    class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    placeholder="Leave blank to keep current" />
+                </div>
+                <div class="grid grid-cols-2 gap-4">
+                  <div>
+                    <label class="block text-xs text-gray-400 mb-1">Preset</label>
+                    <select x-model="editForm.preset"
+                      @change="applyPresetToForm()"
+                      class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                      <template x-for="(prompt, key) in presets" :key="key">
+                        <option :value="key" x-text="key"></option>
+                      </template>
+                    </select>
+                  </div>
+                  <div>
+                    <label class="block text-xs text-gray-400 mb-1">Model</label>
+                    <select x-model="editForm.model"
+                      class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                      <optgroup label="Claude">
+                        <template x-for="(name, key) in models.claude" :key="key">
+                          <option :value="key" x-text="key + ' — ' + name"></option>
+                        </template>
+                      </optgroup>
+                      <optgroup label="Ollama" x-show="models.ollama && models.ollama.length">
+                        <template x-for="m in models.ollama" :key="m">
+                          <option :value="m" x-text="m"></option>
+                        </template>
+                      </optgroup>
+                    </select>
+                  </div>
+                </div>
+                <div>
+                  <label class="block text-xs text-gray-400 mb-1">System Prompt (overrides preset)</label>
+                  <textarea x-model="editForm.system_prompt" rows="4"
+                    class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none"
+                    placeholder="Custom system prompt…"></textarea>
+                </div>
+                <div class="flex items-center gap-3">
+                  <button type="submit"
+                    class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 rounded-lg text-sm font-medium transition-colors"
+                    :disabled="saving">
+                    <span x-text="saving ? 'Saving…' : 'Save & Restart'"></span>
+                  </button>
+                  <button
+                    type="button"
+                    x-show="selectedAgent && !protectedAgents.includes(selectedAgent.instance_id)"
+                    @click="deleteAgent(selectedAgent?.instance_id)"
+                    class="px-4 py-2 bg-red-900/60 hover:bg-red-800 border border-red-700 rounded-lg text-sm font-medium text-red-400 transition-colors">
+                    Delete Agent
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+
+          <!-- Memory Tab -->
+          <div x-show="agentTab === 'memory'" class="max-w-2xl">
+            <div class="flex items-center justify-between mb-4">
+              <div>
+                <h3 class="font-semibold text-gray-200">Conversation Memory</h3>
+                <p class="text-xs text-gray-500 mt-0.5">
+                  <span x-text="memory.count || 0"></span> messages · Owner ID: <span x-text="ownerIdDisplay"></span>
+                </p>
+              </div>
+              <button
+                @click="clearMemory()"
+                class="px-3 py-1.5 bg-red-900/60 hover:bg-red-800 border border-red-700 rounded-lg text-sm text-red-400 transition-colors"
+                x-show="memory.exists">
+                Clear Memory
+              </button>
+            </div>
+
+            <div x-show="!memory.exists" class="text-center py-12 text-gray-600">
+              <span class="text-4xl block mb-3">💭</span>
+              <p>No memory file found for this agent</p>
+            </div>
+
+            <div x-show="memory.exists && memory.messages && memory.messages.length === 0" class="text-center py-12 text-gray-600">
+              <p>Memory file exists but is empty</p>
+            </div>
+
+            <div class="space-y-3">
+              <template x-for="(msg, i) in memory.messages" :key="i">
+                <div
+                  class="flex"
+                  :class="msg.role === 'user' ? 'justify-end' : 'justify-start'"
+                >
+                  <div class="max-w-[80%]">
+                    <p class="text-xs text-gray-500 mb-1 px-1"
+                       :class="msg.role === 'user' ? 'text-right' : 'text-left'"
+                       x-text="msg.role === 'user' ? 'You' : 'Assistant'"></p>
+                    <div
+                      class="px-4 py-3 text-sm text-gray-100 whitespace-pre-wrap break-words"
+                      :class="msg.role === 'user' ? 'bubble-user' : 'bubble-assistant'"
+                      x-text="typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content, null, 2)"
+                    ></div>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </div>
+
+          <!-- Cron Tab -->
+          <div x-show="agentTab === 'cron'" class="max-w-4xl">
+            <div class="flex items-center justify-between mb-4">
+              <h3 class="font-semibold text-gray-200">Scheduled Jobs</h3>
+              <button @click="openCronModal(null)"
+                class="flex items-center gap-2 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 rounded-lg text-sm transition-colors">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+                </svg>
+                Add Cron Job
+              </button>
+            </div>
+
+            <div x-show="cronJobs.length === 0" class="text-center py-12 text-gray-600">
+              <span class="text-4xl block mb-3">⏰</span>
+              <p>No cron jobs for this agent</p>
+            </div>
+
+            <div x-show="cronJobs.length > 0" class="bg-gray-800 rounded-xl border border-gray-700 overflow-hidden">
+              <table class="w-full text-sm">
+                <thead>
+                  <tr class="border-b border-gray-700 text-xs text-gray-500 uppercase">
+                    <th class="px-4 py-3 text-left">Schedule</th>
+                    <th class="px-4 py-3 text-left">Command</th>
+                    <th class="px-4 py-3 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <template x-for="job in cronJobs" :key="job.index">
+                    <tr class="border-b border-gray-700/50 last:border-0 hover:bg-gray-700/30">
+                      <td class="px-4 py-3 font-mono text-indigo-300 whitespace-nowrap" x-text="job.schedule"></td>
+                      <td class="px-4 py-3 font-mono text-gray-300 break-all" x-text="job.command"></td>
+                      <td class="px-4 py-3 text-right whitespace-nowrap">
+                        <button @click="openCronModal(job)"
+                          class="text-xs px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded mr-1 transition-colors">Edit</button>
+                        <button @click="deleteCronJob(job.index)"
+                          class="text-xs px-2 py-1 bg-red-900/50 hover:bg-red-800 rounded text-red-400 transition-colors">Delete</button>
+                      </td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Files Tab -->
+          <div x-show="agentTab === 'files'" class="max-w-3xl">
+            <div class="flex items-center justify-between mb-4">
+              <h3 class="font-semibold text-gray-200">Output Files</h3>
+              <p class="text-xs text-gray-500" x-text="filePath ? 'Path: ' + filePath : 'Root output directory'"></p>
+            </div>
+
+            <div x-show="agentFiles.length === 0" class="text-center py-12 text-gray-600">
+              <span class="text-4xl block mb-3">📂</span>
+              <p>No files in output directory</p>
+            </div>
+
+            <div x-show="agentFiles.length > 0" class="bg-gray-800 rounded-xl border border-gray-700 overflow-hidden">
+              <template x-if="filePath">
+                <button @click="navigateFiles('')"
+                  class="flex items-center gap-2 w-full px-4 py-3 text-sm text-indigo-400 hover:bg-gray-700/50 border-b border-gray-700 transition-colors">
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
+                  </svg>
+                  Back to root
+                </button>
+              </template>
+              <template x-for="file in agentFiles" :key="file.path">
+                <div class="flex items-center gap-3 px-4 py-3 border-b border-gray-700/50 last:border-0 hover:bg-gray-700/30">
+                  <span class="text-xl" x-text="file.is_dir ? '📁' : '📄'"></span>
+                  <div class="flex-1 min-w-0">
+                    <p class="text-sm font-medium truncate" x-text="file.name"></p>
+                    <p class="text-xs text-gray-500" x-text="file.is_dir ? 'Directory' : formatBytes(file.size) + ' · ' + formatDate(file.modified)"></p>
+                  </div>
+                  <template x-if="file.is_dir">
+                    <button @click="navigateFiles(file.path)"
+                      class="text-xs px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded transition-colors">Open</button>
+                  </template>
+                  <template x-if="!file.is_dir">
+                    <a :href="'/api/agents/' + selectedAgent?.instance_id + '/files/download?path=' + encodeURIComponent(file.path)"
+                      :download="file.name"
+                      @click.prevent="downloadFile(file)"
+                      class="text-xs px-2 py-1 bg-indigo-700 hover:bg-indigo-600 rounded transition-colors">Download</a>
+                  </template>
+                </div>
+              </template>
+            </div>
+          </div>
+
+          <!-- Logs Tab -->
+          <div x-show="agentTab === 'logs'" class="h-full flex flex-col">
+            <div class="flex items-center justify-between mb-3">
+              <h3 class="font-semibold text-gray-200">Service Logs</h3>
+              <button @click="loadLogs()"
+                class="flex items-center gap-2 px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm transition-colors">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                    d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+                Refresh
+              </button>
+            </div>
+            <div class="flex-1 bg-gray-950 rounded-xl border border-gray-700 p-4 overflow-y-auto scrollbar-thin min-h-[400px]">
+              <pre class="log-output text-gray-300 whitespace-pre-wrap break-all" x-text="logs || 'Loading logs…'"></pre>
+            </div>
+          </div>
+
+        </div><!-- /tab content -->
+      </div><!-- /agent detail -->
+
+      <!-- ─── SKILLS PAGE ─── -->
+      <div x-show="currentPage === 'skills'" class="p-6">
+        <div class="flex items-center justify-between mb-6">
+          <h2 class="text-xl font-bold text-gray-100">Claude Skills</h2>
+          <p class="text-sm text-gray-500">~/.claude/skills/ · read-only</p>
+        </div>
+        <div x-show="skills.length === 0" class="text-center py-16 text-gray-600">
+          <span class="text-5xl block mb-4">🧩</span>
+          <p>No skills found in ~/.claude/skills/</p>
+        </div>
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          <template x-for="skill in skills" :key="skill.name">
+            <div class="bg-gray-800 rounded-xl border border-gray-700 p-5 hover:border-indigo-600 transition-colors">
+              <div class="flex items-start gap-3">
+                <span class="text-2xl mt-0.5">🧩</span>
+                <div>
+                  <h3 class="font-semibold text-gray-100" x-text="skill.name"></h3>
+                  <p class="text-xs text-gray-400 mt-1 leading-relaxed"
+                     x-text="skill.description || 'No description available'"></p>
+                  <p class="text-xs text-gray-600 mt-2 font-mono truncate" x-text="skill.path"></p>
+                </div>
+              </div>
+            </div>
+          </template>
+        </div>
+      </div>
+
+      <!-- ─── STATUS PAGE ─── -->
+      <div x-show="currentPage === 'status'" class="p-6">
+        <div class="flex items-center justify-between mb-6">
+          <h2 class="text-xl font-bold text-gray-100">VPS Status</h2>
+          <p class="text-xs text-gray-500">Auto-refreshes every 30s</p>
+        </div>
+
+        <!-- Stat cards -->
+        <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+          <div class="bg-gray-800 rounded-xl border border-gray-700 p-5">
+            <p class="text-xs text-gray-500 mb-1">⏱️ Uptime</p>
+            <p class="text-xl font-bold text-gray-100" x-text="vpsStatus.uptime || '…'"></p>
+          </div>
+          <div class="bg-gray-800 rounded-xl border border-gray-700 p-5">
+            <p class="text-xs text-gray-500 mb-1">🧠 Memory</p>
+            <p class="text-xl font-bold text-gray-100" x-text="vpsStatus.memory ? vpsStatus.memory.percent + '%' : '…'"></p>
+            <p class="text-xs text-gray-500 mt-1"
+               x-text="vpsStatus.memory ? formatBytes(vpsStatus.memory.used) + ' / ' + formatBytes(vpsStatus.memory.total) : ''"></p>
+            <!-- Memory bar -->
+            <div class="mt-2 h-1.5 bg-gray-700 rounded-full overflow-hidden">
+              <div class="h-full rounded-full transition-all"
+                   :class="(vpsStatus.memory?.percent||0) > 80 ? 'bg-red-500' : (vpsStatus.memory?.percent||0) > 60 ? 'bg-yellow-500' : 'bg-green-500'"
+                   :style="'width:' + (vpsStatus.memory?.percent||0) + '%'"></div>
+            </div>
+          </div>
+          <div class="bg-gray-800 rounded-xl border border-gray-700 p-5">
+            <p class="text-xs text-gray-500 mb-1">💾 Disk</p>
+            <p class="text-xl font-bold text-gray-100" x-text="vpsStatus.disk ? vpsStatus.disk.percent + '%' : '…'"></p>
+            <p class="text-xs text-gray-500 mt-1"
+               x-text="vpsStatus.disk ? formatBytes(vpsStatus.disk.used) + ' / ' + formatBytes(vpsStatus.disk.total) : ''"></p>
+            <div class="mt-2 h-1.5 bg-gray-700 rounded-full overflow-hidden">
+              <div class="h-full rounded-full transition-all"
+                   :class="(vpsStatus.disk?.percent||0) > 80 ? 'bg-red-500' : (vpsStatus.disk?.percent||0) > 60 ? 'bg-yellow-500' : 'bg-green-500'"
+                   :style="'width:' + (vpsStatus.disk?.percent||0) + '%'"></div>
+            </div>
+          </div>
+          <div class="bg-gray-800 rounded-xl border border-gray-700 p-5">
+            <p class="text-xs text-gray-500 mb-1">⚡ Load Avg</p>
+            <p class="text-xl font-bold text-gray-100" x-text="vpsStatus.load ? vpsStatus.load['1m'].toFixed(2) : '…'"></p>
+            <p class="text-xs text-gray-500 mt-1"
+               x-text="vpsStatus.load ? '5m: ' + vpsStatus.load['5m'].toFixed(2) + ' · 15m: ' + vpsStatus.load['15m'].toFixed(2) : ''"></p>
+          </div>
+        </div>
+
+        <!-- Agents table -->
+        <h3 class="font-semibold text-gray-300 mb-3">Agents Overview</h3>
+        <div class="bg-gray-800 rounded-xl border border-gray-700 overflow-hidden">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="border-b border-gray-700 text-xs text-gray-500 uppercase">
+                <th class="px-4 py-3 text-left">Agent</th>
+                <th class="px-4 py-3 text-left">ID</th>
+                <th class="px-4 py-3 text-left">Preset</th>
+                <th class="px-4 py-3 text-left">Model</th>
+                <th class="px-4 py-3 text-left">Status</th>
+                <th class="px-4 py-3 text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              <template x-for="agent in agents" :key="agent.instance_id">
+                <tr class="border-b border-gray-700/50 last:border-0 hover:bg-gray-700/20">
+                  <td class="px-4 py-3 font-medium" x-text="agent.bot_name"></td>
+                  <td class="px-4 py-3 font-mono text-xs text-gray-400" x-text="agent.instance_id"></td>
+                  <td class="px-4 py-3 text-gray-400 capitalize" x-text="agent.preset"></td>
+                  <td class="px-4 py-3 text-gray-400" x-text="agent.model"></td>
+                  <td class="px-4 py-3">
+                    <span class="px-2 py-0.5 rounded-full text-xs font-medium"
+                      :class="agent.status === 'active'
+                        ? 'bg-green-900/60 text-green-400'
+                        : 'bg-red-900/60 text-red-400'"
+                      x-text="agent.status"></span>
+                  </td>
+                  <td class="px-4 py-3 text-right">
+                    <button @click="restartAgent(agent.instance_id)"
+                      class="text-xs px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded transition-colors">Restart</button>
+                  </td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+    </main>
+  </div>
+</div>
+
+<!-- ═══════════════════ ADD AGENT MODAL ═══════════════════ -->
+<div x-show="showAddAgentModal"
+  x-transition:enter="transition ease-out duration-200"
+  x-transition:enter-start="opacity-0"
+  x-transition:enter-end="opacity-100"
+  class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+  @click.self="showAddAgentModal = false">
+  <div class="bg-gray-800 rounded-2xl border border-gray-700 w-full max-w-lg shadow-2xl"
+    x-transition:enter="transition ease-out duration-200"
+    x-transition:enter-start="scale-95 opacity-0"
+    x-transition:enter-end="scale-100 opacity-100">
+    <div class="flex items-center justify-between px-6 py-4 border-b border-gray-700">
+      <h3 class="text-base font-semibold">Add New Agent</h3>
+      <button @click="showAddAgentModal = false" class="text-gray-500 hover:text-gray-300">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+        </svg>
+      </button>
+    </div>
+    <form @submit.prevent="submitAddAgent()" class="p-6 space-y-4">
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="block text-xs text-gray-400 mb-1">Instance ID <span class="text-red-400">*</span></label>
+          <input x-model="addForm.instance_id" type="text" required placeholder="e.g. social"
+            class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+          <p class="text-xs text-gray-600 mt-1">lowercase, no spaces</p>
+        </div>
+        <div>
+          <label class="block text-xs text-gray-400 mb-1">Bot Name <span class="text-red-400">*</span></label>
+          <input x-model="addForm.bot_name" type="text" required placeholder="e.g. Social Media Bot"
+            class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+        </div>
+      </div>
+      <div>
+        <label class="block text-xs text-gray-400 mb-1">Bot Token <span class="text-red-400">*</span></label>
+        <input x-model="addForm.bot_token" type="password" required placeholder="Telegram bot token from @BotFather"
+          class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+      </div>
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="block text-xs text-gray-400 mb-1">Preset</label>
+          <select x-model="addForm.preset"
+            class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            <template x-for="(prompt, key) in presets" :key="key">
+              <option :value="key" x-text="key"></option>
+            </template>
+          </select>
+        </div>
+        <div>
+          <label class="block text-xs text-gray-400 mb-1">Model</label>
+          <select x-model="addForm.model"
+            class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            <optgroup label="Claude">
+              <template x-for="(name, key) in models.claude" :key="key">
+                <option :value="key" x-text="key + ' — ' + name"></option>
+              </template>
+            </optgroup>
+            <optgroup label="Ollama" x-show="models.ollama && models.ollama.length">
+              <template x-for="m in models.ollama" :key="m">
+                <option :value="m" x-text="m"></option>
+              </template>
+            </optgroup>
+          </select>
+        </div>
+      </div>
+      <div class="flex justify-end gap-3 pt-2">
+        <button type="button" @click="showAddAgentModal = false"
+          class="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm transition-colors">Cancel</button>
+        <button type="submit"
+          class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 rounded-lg text-sm font-medium transition-colors"
+          :disabled="addingAgent">
+          <span x-text="addingAgent ? 'Creating…' : 'Create Agent'"></span>
+        </button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ═══════════════════ CRON MODAL ═══════════════════ -->
+<div x-show="showCronModal"
+  class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+  @click.self="showCronModal = false">
+  <div class="bg-gray-800 rounded-2xl border border-gray-700 w-full max-w-lg shadow-2xl">
+    <div class="flex items-center justify-between px-6 py-4 border-b border-gray-700">
+      <h3 class="text-base font-semibold" x-text="cronForm.index !== null ? 'Edit Cron Job' : 'Add Cron Job'"></h3>
+      <button @click="showCronModal = false" class="text-gray-500 hover:text-gray-300">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+        </svg>
+      </button>
+    </div>
+    <div class="p-6 space-y-4">
+      <!-- Cron fields -->
+      <div>
+        <label class="block text-xs text-gray-400 mb-2">Schedule</label>
+        <div class="grid grid-cols-5 gap-2">
+          <div>
+            <input x-model="cronForm.minute" type="text" placeholder="*"
+              @input="updateCronPreview()"
+              class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm text-center focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+            <p class="text-xs text-gray-600 text-center mt-1">minute</p>
+          </div>
+          <div>
+            <input x-model="cronForm.hour" type="text" placeholder="*"
+              @input="updateCronPreview()"
+              class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm text-center focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+            <p class="text-xs text-gray-600 text-center mt-1">hour</p>
+          </div>
+          <div>
+            <input x-model="cronForm.day" type="text" placeholder="*"
+              @input="updateCronPreview()"
+              class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm text-center focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+            <p class="text-xs text-gray-600 text-center mt-1">day</p>
+          </div>
+          <div>
+            <input x-model="cronForm.month" type="text" placeholder="*"
+              @input="updateCronPreview()"
+              class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm text-center focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+            <p class="text-xs text-gray-600 text-center mt-1">month</p>
+          </div>
+          <div>
+            <input x-model="cronForm.weekday" type="text" placeholder="*"
+              @input="updateCronPreview()"
+              class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm text-center focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+            <p class="text-xs text-gray-600 text-center mt-1">weekday</p>
+          </div>
+        </div>
+        <!-- Preview -->
+        <div class="mt-3 bg-gray-900 rounded-lg px-4 py-2.5 border border-gray-700">
+          <p class="text-xs text-gray-500 mb-0.5">Preview</p>
+          <p class="font-mono text-sm text-indigo-300" x-text="cronPreview"></p>
+          <p class="text-xs text-gray-500 mt-0.5" x-text="cronDescription"></p>
+        </div>
+      </div>
+      <div>
+        <label class="block text-xs text-gray-400 mb-1">Command <span class="text-red-400">*</span></label>
+        <input x-model="cronForm.command" type="text" required
+          placeholder="e.g. python3 /opt/script.py"
+          class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+      </div>
+
+      <!-- Quick presets -->
+      <div>
+        <p class="text-xs text-gray-500 mb-2">Quick presets:</p>
+        <div class="flex flex-wrap gap-2">
+          <template x-for="preset in cronPresets" :key="preset.label">
+            <button type="button" @click="applyCronPreset(preset)"
+              class="text-xs px-2.5 py-1 bg-gray-700 hover:bg-gray-600 rounded-full transition-colors text-gray-300">
+              <span x-text="preset.label"></span>
+            </button>
+          </template>
+        </div>
+      </div>
+
+      <div class="flex justify-end gap-3 pt-2">
+        <button type="button" @click="showCronModal = false"
+          class="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm transition-colors">Cancel</button>
+        <button type="button" @click="saveCronJob()"
+          class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 rounded-lg text-sm font-medium transition-colors"
+          :disabled="savingCron">
+          <span x-text="savingCron ? 'Saving…' : (cronForm.index !== null ? 'Update' : 'Add Job')"></span>
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════ TOAST ═══════════════════ -->
+<div class="fixed bottom-5 right-5 z-[100] space-y-2 pointer-events-none">
+  <template x-for="toast in toasts" :key="toast.id">
+    <div
+      x-show="toast.visible"
+      x-transition:enter="transition ease-out duration-300"
+      x-transition:enter-start="opacity-0 translate-y-4"
+      x-transition:enter-end="opacity-100 translate-y-0"
+      x-transition:leave="transition ease-in duration-200"
+      x-transition:leave-start="opacity-100"
+      x-transition:leave-end="opacity-0"
+      class="flex items-center gap-3 px-4 py-3 rounded-xl shadow-lg border pointer-events-auto max-w-xs"
+      :class="toast.type === 'success'
+        ? 'bg-green-900/90 border-green-700 text-green-100'
+        : toast.type === 'error'
+        ? 'bg-red-900/90 border-red-700 text-red-100'
+        : 'bg-gray-700 border-gray-600 text-gray-100'"
+    >
+      <span x-text="toast.type === 'success' ? '✓' : toast.type === 'error' ? '✗' : 'ℹ'"></span>
+      <span class="text-sm" x-text="toast.message"></span>
+    </div>
+  </template>
+</div>
+
+<!-- ═══════════════════ CONFIRM DIALOG ═══════════════════ -->
+<div x-show="confirm.show"
+  class="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-black/70"
+  @click.self="confirm.show = false">
+  <div class="bg-gray-800 rounded-2xl border border-gray-700 w-full max-w-sm shadow-2xl p-6">
+    <h3 class="font-semibold text-gray-100 mb-2" x-text="confirm.title"></h3>
+    <p class="text-sm text-gray-400 mb-6" x-text="confirm.message"></p>
+    <div class="flex justify-end gap-3">
+      <button @click="confirm.show = false"
+        class="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm transition-colors">Cancel</button>
+      <button @click="confirm.onConfirm(); confirm.show = false"
+        class="px-4 py-2 bg-red-700 hover:bg-red-600 rounded-lg text-sm font-medium transition-colors">
+        <span x-text="confirm.confirmText || 'Confirm'"></span>
+      </button>
+    </div>
+  </div>
+</div>
+
+<script>
+function app() {
+  return {
+    // Auth
+    authenticated: false,
+    loginKey: '',
+    loginError: '',
+
+    // Layout
+    currentPage: 'home',
+    agentTab: 'overview',
+
+    // Data
+    agents: [],
+    selectedAgent: null,
+    presets: {},
+    models: { claude: {}, ollama: [] },
+    skills: [],
+    vpsStatus: {},
+    memory: { messages: [], count: 0, exists: false },
+    cronJobs: [],
+    agentFiles: [],
+    filePath: '',
+    logs: '',
+
+    // UI state
+    restarting: false,
+    saving: false,
+    addingAgent: false,
+    savingCron: false,
+    showAddAgentModal: false,
+    showCronModal: false,
+    toasts: [],
+    confirm: { show: false, title: '', message: '', confirmText: 'Confirm', onConfirm: () => {} },
+
+    // Forms
+    editForm: {},
+    addForm: { instance_id: '', bot_name: '', bot_token: '', preset: 'general', model: 'sonnet', model_type: 'claude' },
+    cronForm: { index: null, minute: '*', hour: '*', day: '*', month: '*', weekday: '*', command: '' },
+    cronPreview: '* * * * *',
+    cronDescription: 'Every minute',
+
+    // Constants
+    ownerIdDisplay: '6165792902',
+    protectedAgents: ['general'],
+
+    cronPresets: [
+      { label: 'Every minute', m:'*', h:'*', d:'*', mo:'*', w:'*' },
+      { label: 'Every hour', m:'0', h:'*', d:'*', mo:'*', w:'*' },
+      { label: 'Daily 9am', m:'0', h:'9', d:'*', mo:'*', w:'*' },
+      { label: 'Daily midnight', m:'0', h:'0', d:'*', mo:'*', w:'*' },
+      { label: 'Every Mon 9am', m:'0', h:'9', d:'*', mo:'*', w:'1' },
+      { label: '1st of month', m:'0', h:'9', d:'1', mo:'*', w:'*' },
+    ],
+
+    // ── Init ──
+    init() {
+      const key = localStorage.getItem('tify_api_key');
+      if (key) {
+        this.loginKey = key;
+        this.authenticated = true;
+        this.loadAll();
+        this.startAutoRefresh();
+      }
+    },
+
+    async loadAll() {
+      await Promise.allSettled([
+        this.loadAgents(),
+        this.loadPresets(),
+        this.loadModels(),
+      ]);
+    },
+
+    startAutoRefresh() {
+      setInterval(() => {
+        this.loadAgents();
+        if (this.currentPage === 'status') this.loadStatus();
+      }, 30000);
+    },
+
+    // ── Auth ──
+    async login() {
+      this.loginError = '';
+      try {
+        const res = await this.api('/api/agents');
+        if (res.ok) {
+          localStorage.setItem('tify_api_key', this.loginKey);
+          this.authenticated = true;
+          await this.loadAll();
+          this.startAutoRefresh();
+        } else {
+          this.loginError = 'Invalid API key. Please try again.';
+        }
+      } catch (e) {
+        this.loginError = 'Connection failed. Is the server running?';
+      }
+    },
+
+    logout() {
+      localStorage.removeItem('tify_api_key');
+      this.authenticated = false;
+      this.loginKey = '';
+    },
+
+    // ── HTTP ──
+    async api(path, opts = {}) {
+      const headers = {
+        'Content-Type': 'application/json',
+        'X-API-Key': this.loginKey || localStorage.getItem('tify_api_key') || '',
+        ...(opts.headers || {}),
+      };
+      return fetch(path, { ...opts, headers });
+    },
+
+    async apiJSON(path, opts = {}) {
+      const res = await this.api(path, opts);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }));
+        throw new Error(err.detail || 'Request failed');
+      }
+      return res.json();
+    },
+
+    // ── Toast ──
+    toast(message, type = 'info') {
+      const id = Date.now();
+      this.toasts.push({ id, message, type, visible: true });
+      setTimeout(() => {
+        const t = this.toasts.find(x => x.id === id);
+        if (t) t.visible = false;
+        setTimeout(() => { this.toasts = this.toasts.filter(x => x.id !== id); }, 300);
+      }, 3500);
+    },
+
+    // ── Confirm ──
+    askConfirm(title, message, onConfirm, confirmText = 'Delete') {
+      this.confirm = { show: true, title, message, confirmText, onConfirm };
+    },
+
+    // ── Navigation ──
+    navigate(page) {
+      this.currentPage = page;
+      this.selectedAgent = null;
+      if (page === 'skills') this.loadSkills();
+      if (page === 'status') this.loadStatus();
+    },
+
+    selectAgent(agent) {
+      this.selectedAgent = { ...agent };
+      this.currentPage = 'agent';
+      this.agentTab = 'overview';
+      this.editForm = {
+        bot_name: agent.bot_name,
+        bot_token: '',
+        preset: agent.preset,
+        model: agent.model,
+        model_type: agent.model_type || 'claude',
+        system_prompt: agent.system_prompt || '',
+      };
+      this.memory = { messages: [], count: 0, exists: false };
+      this.cronJobs = [];
+      this.agentFiles = [];
+      this.logs = '';
+      this.filePath = '';
+    },
+
+    onTabChange(tab) {
+      if (!this.selectedAgent) return;
+      if (tab === 'memory') this.loadMemory();
+      if (tab === 'cron') this.loadCronJobs();
+      if (tab === 'files') this.loadFiles();
+      if (tab === 'logs') this.loadLogs();
+    },
+
+    // ── Agents API ──
+    async loadAgents() {
+      try {
+        const data = await this.apiJSON('/api/agents');
+        this.agents = data;
+        // Sync selectedAgent status
+        if (this.selectedAgent) {
+          const updated = data.find(a => a.instance_id === this.selectedAgent.instance_id);
+          if (updated) this.selectedAgent.status = updated.status;
+        }
+      } catch (e) {
+        console.warn('loadAgents:', e.message);
+      }
+    },
+
+    async loadPresets() {
+      try {
+        const data = await this.apiJSON('/api/presets');
+        this.presets = data.presets;
+      } catch (e) {}
+    },
+
+    async loadModels() {
+      try {
+        const data = await this.apiJSON('/api/models');
+        this.models = data;
+      } catch (e) {}
+    },
+
+    applyPresetToForm() {
+      if (this.presets[this.editForm.preset]) {
+        this.editForm.system_prompt = this.presets[this.editForm.preset];
+      }
+    },
+
+    async restartAgent(id) {
+      if (!id) return;
+      this.restarting = true;
+      try {
+        const data = await this.apiJSON(`/api/agents/${id}/restart`, { method: 'POST' });
+        this.toast(data.success ? `Agent '${id}' restarted` : `Restart failed: ${data.output}`,
+          data.success ? 'success' : 'error');
+        await this.loadAgents();
+      } catch (e) {
+        this.toast('Restart failed: ' + e.message, 'error');
+      } finally {
+        this.restarting = false;
+      }
+    },
+
+    async saveAgent() {
+      if (!this.selectedAgent) return;
+      this.saving = true;
+      const payload = { ...this.editForm };
+      if (!payload.bot_token) delete payload.bot_token;
+      try {
+        const data = await this.apiJSON(`/api/agents/${this.selectedAgent.instance_id}`, {
+          method: 'PUT',
+          body: JSON.stringify(payload),
+        });
+        this.selectedAgent = { ...data.agent, status: this.selectedAgent.status };
+        this.toast('Agent saved and restarted', 'success');
+        await this.loadAgents();
+      } catch (e) {
+        this.toast('Save failed: ' + e.message, 'error');
+      } finally {
+        this.saving = false;
+      }
+    },
+
+    async deleteAgent(id) {
+      if (!id) return;
+      this.askConfirm(
+        'Delete Agent',
+        `Are you sure you want to delete agent "${id}"? This will stop the service and delete all config and files.`,
+        async () => {
+          try {
+            await this.apiJSON(`/api/agents/${id}`, { method: 'DELETE' });
+            this.toast(`Agent '${id}' deleted`, 'success');
+            this.currentPage = 'home';
+            this.selectedAgent = null;
+            await this.loadAgents();
+          } catch (e) {
+            this.toast('Delete failed: ' + e.message, 'error');
+          }
+        },
+        'Delete'
+      );
+    },
+
+    openAddAgentModal() {
+      this.addForm = { instance_id: '', bot_name: '', bot_token: '', preset: 'general', model: 'sonnet', model_type: 'claude' };
+      this.showAddAgentModal = true;
+    },
+
+    async submitAddAgent() {
+      this.addingAgent = true;
+      try {
+        const data = await this.apiJSON('/api/agents', {
+          method: 'POST',
+          body: JSON.stringify(this.addForm),
+        });
+        this.showAddAgentModal = false;
+        this.toast(`Agent '${this.addForm.instance_id}' created`, 'success');
+        await this.loadAgents();
+        const newAgent = this.agents.find(a => a.instance_id === this.addForm.instance_id);
+        if (newAgent) this.selectAgent(newAgent);
+      } catch (e) {
+        this.toast('Create failed: ' + e.message, 'error');
+      } finally {
+        this.addingAgent = false;
+      }
+    },
+
+    // ── Memory ──
+    async loadMemory() {
+      if (!this.selectedAgent) return;
+      try {
+        const data = await this.apiJSON(`/api/agents/${this.selectedAgent.instance_id}/memory`);
+        this.memory = data;
+      } catch (e) {
+        this.toast('Failed to load memory: ' + e.message, 'error');
+      }
+    },
+
+    async clearMemory() {
+      if (!this.selectedAgent) return;
+      this.askConfirm(
+        'Clear Memory',
+        `Delete all conversation memory for agent "${this.selectedAgent.instance_id}"?`,
+        async () => {
+          try {
+            await this.apiJSON(`/api/agents/${this.selectedAgent.instance_id}/memory`, { method: 'DELETE' });
+            this.memory = { messages: [], count: 0, exists: false };
+            this.toast('Memory cleared', 'success');
+          } catch (e) {
+            this.toast('Failed to clear memory: ' + e.message, 'error');
+          }
+        },
+        'Clear'
+      );
+    },
+
+    // ── Cron ──
+    async loadCronJobs() {
+      if (!this.selectedAgent) return;
+      try {
+        const data = await this.apiJSON(`/api/cron?agent=${this.selectedAgent.instance_id}`);
+        this.cronJobs = data.jobs;
+      } catch (e) {
+        this.toast('Failed to load cron jobs: ' + e.message, 'error');
+      }
+    },
+
+    openCronModal(job) {
+      if (job) {
+        const parts = job.schedule.split(' ');
+        this.cronForm = {
+          index: job.index,
+          minute: parts[0] || '*',
+          hour: parts[1] || '*',
+          day: parts[2] || '*',
+          month: parts[3] || '*',
+          weekday: parts[4] || '*',
+          command: job.command,
+        };
+      } else {
+        this.cronForm = { index: null, minute: '*', hour: '*', day: '*', month: '*', weekday: '*', command: '' };
+      }
+      this.updateCronPreview();
+      this.showCronModal = true;
+    },
+
+    updateCronPreview() {
+      const { minute, hour, day, month, weekday } = this.cronForm;
+      this.cronPreview = `${minute||'*'} ${hour||'*'} ${day||'*'} ${month||'*'} ${weekday||'*'}`;
+      this.cronDescription = this.describeCron(minute||'*', hour||'*', day||'*', month||'*', weekday||'*');
+    },
+
+    describeCron(m, h, d, mo, w) {
+      if (m==='*' && h==='*' && d==='*' && mo==='*' && w==='*') return 'Every minute';
+      if (m==='0' && h==='*') return `Every hour at :00`;
+      if (h!=='*' && m!=='*' && d==='*' && w==='*') return `Daily at ${h.padStart(2,'0')}:${m.padStart(2,'0')}`;
+      if (w!=='*') {
+        const days = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+        const dayName = days[parseInt(w)] || `weekday ${w}`;
+        return `Every ${dayName} at ${h.padStart(2,'0')}:${m.padStart(2,'0')}`;
+      }
+      if (d!=='*') return `Monthly on day ${d} at ${h.padStart(2,'0')}:${m.padStart(2,'0')}`;
+      return 'Custom schedule';
+    },
+
+    applyCronPreset(preset) {
+      this.cronForm.minute = preset.m;
+      this.cronForm.hour = preset.h;
+      this.cronForm.day = preset.d;
+      this.cronForm.month = preset.mo;
+      this.cronForm.weekday = preset.w;
+      this.updateCronPreview();
+    },
+
+    async saveCronJob() {
+      if (!this.selectedAgent || !this.cronForm.command.trim()) {
+        this.toast('Command is required', 'error');
+        return;
+      }
+      this.savingCron = true;
+      const schedule = this.cronPreview;
+      try {
+        if (this.cronForm.index !== null) {
+          await this.apiJSON(`/api/cron/${this.cronForm.index}`, {
+            method: 'PUT',
+            body: JSON.stringify({ schedule, command: this.cronForm.command, agent: this.selectedAgent.instance_id }),
+          });
+          this.toast('Cron job updated', 'success');
+        } else {
+          await this.apiJSON('/api/cron', {
+            method: 'POST',
+            body: JSON.stringify({ schedule, command: this.cronForm.command, agent: this.selectedAgent.instance_id }),
+          });
+          this.toast('Cron job added', 'success');
+        }
+        this.showCronModal = false;
+        await this.loadCronJobs();
+      } catch (e) {
+        this.toast('Failed to save cron job: ' + e.message, 'error');
+      } finally {
+        this.savingCron = false;
+      }
+    },
+
+    async deleteCronJob(index) {
+      this.askConfirm(
+        'Delete Cron Job',
+        'Are you sure you want to delete this cron job?',
+        async () => {
+          try {
+            await this.apiJSON(`/api/cron/${index}`, { method: 'DELETE' });
+            this.toast('Cron job deleted', 'success');
+            await this.loadCronJobs();
+          } catch (e) {
+            this.toast('Failed to delete: ' + e.message, 'error');
+          }
+        },
+        'Delete'
+      );
+    },
+
+    // ── Files ──
+    async loadFiles(path = '') {
+      if (!this.selectedAgent) return;
+      this.filePath = path;
+      try {
+        const qs = path ? `?path=${encodeURIComponent(path)}` : '';
+        const data = await this.apiJSON(`/api/agents/${this.selectedAgent.instance_id}/files${qs}`);
+        this.agentFiles = data.files;
+      } catch (e) {
+        this.toast('Failed to load files: ' + e.message, 'error');
+      }
+    },
+
+    navigateFiles(path) {
+      this.loadFiles(path);
+    },
+
+    async downloadFile(file) {
+      if (!this.selectedAgent) return;
+      const url = `/api/agents/${this.selectedAgent.instance_id}/files/download?path=${encodeURIComponent(file.path)}`;
+      const key = this.loginKey || localStorage.getItem('tify_api_key') || '';
+      try {
+        const res = await fetch(url, { headers: { 'X-API-Key': key } });
+        if (!res.ok) throw new Error('Download failed');
+        const blob = await res.blob();
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = file.name;
+        a.click();
+        URL.revokeObjectURL(a.href);
+      } catch (e) {
+        this.toast('Download failed: ' + e.message, 'error');
+      }
+    },
+
+    // ── Logs ──
+    async loadLogs() {
+      if (!this.selectedAgent) return;
+      this.logs = 'Fetching logs…';
+      try {
+        const data = await this.apiJSON(`/api/agents/${this.selectedAgent.instance_id}/logs`);
+        this.logs = data.logs;
+      } catch (e) {
+        this.logs = 'Failed to load logs: ' + e.message;
+      }
+    },
+
+    // ── Skills ──
+    async loadSkills() {
+      try {
+        const data = await this.apiJSON('/api/skills');
+        this.skills = data.skills;
+      } catch (e) {
+        this.toast('Failed to load skills: ' + e.message, 'error');
+      }
+    },
+
+    // ── Status ──
+    async loadStatus() {
+      try {
+        const data = await this.apiJSON('/api/status');
+        this.vpsStatus = data;
+      } catch (e) {
+        this.toast('Failed to load status: ' + e.message, 'error');
+      }
+    },
+
+    // ── Formatters ──
+    formatBytes(bytes) {
+      if (bytes === 0) return '0 B';
+      const k = 1024;
+      const sizes = ['B', 'KB', 'MB', 'GB'];
+      const i = Math.floor(Math.log(bytes) / Math.log(k));
+      return (bytes / Math.pow(k, i)).toFixed(1) + ' ' + sizes[i];
+    },
+
+    formatDate(ts) {
+      if (!ts) return '';
+      return new Date(ts * 1000).toLocaleString();
+    },
+  };
+}
+</script>
+</body>
+</html>
