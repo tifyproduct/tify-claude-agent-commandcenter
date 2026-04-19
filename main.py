@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional
 
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -93,6 +94,13 @@ WantedBy=multi-user.target
 # ---------------------------------------------------------------------------
 
 app = FastAPI(title="Tify Agent Command Center", version="1.0.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 API_KEY = os.getenv("COMMAND_CENTER_KEY", "change-this-secret-key")
 
