@@ -139,7 +139,9 @@ DEFAULT_EXTERNAL_AGENTS = [
         "platform": "whatsapp",
         "preset": "general",
         "service_name": "hermes-agent",
-        "description": "AI agent with WhatsApp integration using Ollama models",
+        "description": "AI agent with WhatsApp integration",
+        "model": "gemma4:31b-cloud",
+        "model_type": "ollama",
     },
     {
         "instance_id": "openclaw",
@@ -149,6 +151,8 @@ DEFAULT_EXTERNAL_AGENTS = [
         "preset": "dev",
         "service_name": "openclaw",
         "description": "Node.js AI agent gateway",
+        "model": "gemma4:31b-cloud",
+        "model_type": "ollama",
     },
 ]
 
