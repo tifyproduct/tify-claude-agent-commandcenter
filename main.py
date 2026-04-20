@@ -129,6 +129,28 @@ _sessions: Dict[str, Dict[str, Any]] = {}
 
 USERS_FILE = DATA_DIR / "users.json"
 ROLES_FILE = DATA_DIR / "roles.json"
+EXTERNAL_AGENTS_FILE = DATA_DIR / "external_agents.json"
+
+DEFAULT_EXTERNAL_AGENTS = [
+    {
+        "instance_id": "hermes",
+        "bot_name": "Hermes Agent",
+        "type": "external",
+        "platform": "whatsapp",
+        "preset": "general",
+        "service_name": "hermes-agent",
+        "description": "AI agent with WhatsApp integration using Ollama models",
+    },
+    {
+        "instance_id": "openclaw",
+        "bot_name": "Openclaw Agent",
+        "type": "external",
+        "platform": "web",
+        "preset": "dev",
+        "service_name": "openclaw",
+        "description": "Node.js AI agent gateway",
+    },
+]
 
 
 def _ensure_data_dir() -> None:
@@ -174,12 +196,39 @@ def _write_roles(roles: Dict[str, Any]) -> None:
         json.dump(roles, f, indent=2)
 
 
+def _read_external_agents() -> List[Dict[str, Any]]:
+    if not EXTERNAL_AGENTS_FILE.exists():
+        return []
+    with open(EXTERNAL_AGENTS_FILE) as f:
+        return json.load(f)
+
+
+def _write_external_agents(agents: List[Dict[str, Any]]) -> None:
+    with open(EXTERNAL_AGENTS_FILE, "w") as f:
+        json.dump(agents, f, indent=2)
+
+
+def _systemd_status_svc(service_name: str) -> str:
+    try:
+        result = subprocess.run(
+            ["systemctl", "is-active", service_name],
+            capture_output=True, text=True, timeout=5,
+        )
+        return result.stdout.strip()
+    except Exception:
+        return "unknown"
+
+
 def _seed_defaults() -> None:
     _ensure_data_dir()
 
     # Seed roles
     if not ROLES_FILE.exists():
         _write_roles(DEFAULT_ROLES)
+
+    # Seed external agents
+    if not EXTERNAL_AGENTS_FILE.exists():
+        _write_external_agents(DEFAULT_EXTERNAL_AGENTS)
 
     # Seed initial admin user
     if not USERS_FILE.exists():
@@ -560,15 +609,22 @@ def _rebuild_crontab_lines(jobs: List[Dict[str, Any]]) -> List[str]:
 
 @app.get("/api/agents")
 def list_agents(user: Dict[str, Any] = Depends(get_current_user)):
-    ids = _list_configs()
     agents = []
-    for iid in ids:
+    # Telegram bots
+    for iid in _list_configs():
         try:
             cfg = _read_config(iid)
         except Exception:
             continue
         cfg["status"] = _systemd_status(iid)
+        cfg.setdefault("type", "telegram")
+        cfg.setdefault("platform", "telegram")
         agents.append(cfg)
+    # External agents
+    for ea in _read_external_agents():
+        ea_copy = dict(ea)
+        ea_copy["status"] = _systemd_status_svc(ea.get("service_name", ea["instance_id"]))
+        agents.append(ea_copy)
     return agents
 
 
@@ -654,23 +710,42 @@ def delete_agent(agent_id: str, user: Dict[str, Any] = Depends(get_current_user)
     return {"success": True, "deleted": agent_id}
 
 
+def _resolve_service_name(agent_id: str) -> str:
+    """Return the systemd service name for any agent (telegram or external)."""
+    for ea in _read_external_agents():
+        if ea["instance_id"] == agent_id:
+            return ea.get("service_name", agent_id)
+    return _service_name(agent_id)
+
+
+def _is_external(agent_id: str) -> bool:
+    return any(ea["instance_id"] == agent_id for ea in _read_external_agents())
+
+
 @app.post("/api/agents/{agent_id}/restart")
 def restart_agent(agent_id: str, user: Dict[str, Any] = Depends(get_current_user)):
-    _read_config(agent_id)
-    result = _systemctl("restart", agent_id)
-    return result
+    if not _is_external(agent_id):
+        _read_config(agent_id)  # 404 check for telegram bots
+    svc = _resolve_service_name(agent_id)
+    try:
+        result = subprocess.run(
+            ["systemctl", "restart", svc],
+            capture_output=True, text=True, timeout=15,
+        )
+        return {"success": result.returncode == 0, "output": result.stdout + result.stderr}
+    except Exception as e:
+        return {"success": False, "output": str(e)}
 
 
 @app.get("/api/agents/{agent_id}/logs")
 def get_agent_logs(agent_id: str, user: Dict[str, Any] = Depends(get_current_user)):
-    _read_config(agent_id)
-    svc = _service_name(agent_id)
+    if not _is_external(agent_id):
+        _read_config(agent_id)  # 404 check for telegram bots
+    svc = _resolve_service_name(agent_id)
     try:
         result = subprocess.run(
             ["journalctl", "-u", svc, "-n", "50", "--no-pager", "--output=short-iso"],
-            capture_output=True,
-            text=True,
-            timeout=15,
+            capture_output=True, text=True, timeout=15,
         )
         return {"logs": result.stdout or result.stderr or "(no logs)"}
     except Exception as e:
