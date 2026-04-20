@@ -1,0 +1,5 @@
+main.py
+requirements.txt
+commandcenter.service
+deploy.sh
+.env.example
