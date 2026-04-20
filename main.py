@@ -142,6 +142,8 @@ DEFAULT_EXTERNAL_AGENTS = [
         "description": "AI agent with WhatsApp integration",
         "model": "gemma4:31b-cloud",
         "model_type": "ollama",
+        "cron_file": "/root/.hermes/cron/jobs.json",
+        "memory_dir": "/root/.hermes/memories",
     },
     {
         "instance_id": "openclaw",
@@ -765,8 +767,40 @@ def _memory_path(agent_id: str) -> Path:
     return Path(BASE_BOT_DIR, "instances", agent_id, "memory", f"{OWNER_ID}.json")
 
 
+def _get_external_agent(agent_id: str) -> Optional[Dict[str, Any]]:
+    for ea in _read_external_agents():
+        if ea["instance_id"] == agent_id:
+            return ea
+    return None
+
+
 @app.get("/api/agents/{agent_id}/memory")
 def get_memory(agent_id: str, user: Dict[str, Any] = Depends(get_current_user)):
+    ea = _get_external_agent(agent_id)
+    if ea:
+        memory_dir = ea.get("memory_dir")
+        if not memory_dir:
+            return {"messages": [], "count": 0, "exists": False, "external": True}
+        md = Path(memory_dir)
+        messages = []
+        for fname in ["MEMORY.md", "USER.md"]:
+            fp = md / fname
+            if fp.exists():
+                content = fp.read_text(errors="replace").strip()
+                if content:
+                    messages.append({"role": "system", "content": f"**{fname}**\n\n{content}"})
+        # Latest 5 session files
+        session_files = sorted(md.glob("*.jsonl"), reverse=True)[:5]
+        for sf in session_files:
+            try:
+                lines = sf.read_text(errors="replace").strip().splitlines()
+                for line in lines[-10:]:
+                    obj = json.loads(line)
+                    messages.append({"role": obj.get("role", "assistant"), "content": obj.get("content", "")})
+            except Exception:
+                pass
+        return {"messages": messages, "count": len(messages), "exists": bool(messages), "external": True}
+
     _read_config(agent_id)
     mp = _memory_path(agent_id)
     if not mp.exists():
@@ -779,6 +813,9 @@ def get_memory(agent_id: str, user: Dict[str, Any] = Depends(get_current_user)):
 
 @app.delete("/api/agents/{agent_id}/memory")
 def clear_memory(agent_id: str, user: Dict[str, Any] = Depends(get_current_user)):
+    ea = _get_external_agent(agent_id)
+    if ea:
+        raise HTTPException(400, "Cannot clear memory for external agents from this interface")
     _read_config(agent_id)
     mp = _memory_path(agent_id)
     if mp.exists():
@@ -791,10 +828,49 @@ def clear_memory(agent_id: str, user: Dict[str, Any] = Depends(get_current_user)
 # ---------------------------------------------------------------------------
 
 
+def _read_hermes_cron(agent_id: str, cron_file: str) -> List[Dict[str, Any]]:
+    p = Path(cron_file)
+    if not p.exists():
+        return []
+    try:
+        with open(p) as f:
+            data = json.load(f)
+        raw_jobs = data.get("jobs", data) if isinstance(data, dict) else data
+        result = []
+        for i, job in enumerate(raw_jobs):
+            result.append({
+                "index": i,
+                "agent": agent_id,
+                "id": job.get("id", ""),
+                "name": job.get("name", ""),
+                "schedule": job.get("schedule", {}).get("expr", "") if isinstance(job.get("schedule"), dict) else str(job.get("schedule", "")),
+                "command": job.get("prompt", job.get("script", ""))[:120] + ("…" if len(job.get("prompt", job.get("script", ""))) > 120 else ""),
+                "raw": f"{job.get('schedule', {}).get('expr', '')} [{job.get('name', '')}]",
+                "enabled": job.get("enabled", True),
+                "state": job.get("state", ""),
+                "last_run_at": job.get("last_run_at", ""),
+                "next_run_at": job.get("next_run_at", ""),
+                "last_status": job.get("last_status", ""),
+                "cron_type": "hermes",
+            })
+        return result
+    except Exception:
+        return []
+
+
 @app.get("/api/cron")
 def list_cron(agent: Optional[str] = Query(default=None), user: Dict[str, Any] = Depends(get_current_user)):
+    # System crontab jobs
     lines = _read_crontab()
     jobs = _parse_cron_jobs(lines)
+
+    # External agent cron jobs
+    for ea in _read_external_agents():
+        cron_file = ea.get("cron_file")
+        if cron_file:
+            ea_jobs = _read_hermes_cron(ea["instance_id"], cron_file)
+            jobs.extend(ea_jobs)
+
     if agent:
         jobs = [j for j in jobs if j["agent"] == agent]
     return {"jobs": jobs}
