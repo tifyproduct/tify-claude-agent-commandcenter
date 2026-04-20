@@ -3,12 +3,16 @@ Tify Agent Command Center — FastAPI Backend
 Runs on VPS port 8080, manages Telegram Claude bots as systemd services.
 """
 
+import hashlib
+import hmac
 import json
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -26,6 +30,9 @@ from pydantic import BaseModel
 BASE_BOT_DIR = "/opt/telegram-claude-bot"
 OWNER_ID = 6165792902
 PROTECTED_AGENTS = {"general"}
+DATA_DIR = Path("/opt/tify-commandcenter/data")
+
+SESSION_TTL = 30 * 24 * 3600  # 30 days in seconds
 
 CLAUDE_MODELS: Dict[str, str] = {
     "sonnet": "claude-sonnet-4-6",
@@ -70,6 +77,17 @@ AGENT_PRESETS: Dict[str, str] = {
     ),
 }
 
+DEFAULT_ROLES: Dict[str, Any] = {
+    "admin": {
+        "name": "Admin",
+        "permissions": ["agents", "skills", "status", "users", "roles"],
+    },
+    "member": {
+        "name": "Member",
+        "permissions": ["agents"],
+    },
+}
+
 SYSTEMD_SERVICE_TEMPLATE = """\
 [Unit]
 Description=Claude Bot - {bot_name}
@@ -90,10 +108,10 @@ WantedBy=multi-user.target
 """
 
 # ---------------------------------------------------------------------------
-# App + Auth
+# App setup
 # ---------------------------------------------------------------------------
 
-app = FastAPI(title="Tify Agent Command Center", version="1.0.0")
+app = FastAPI(title="Tify Agent Command Center", version="2.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -102,18 +120,131 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-API_KEY = os.getenv("COMMAND_CENTER_KEY", "change-this-secret-key")
+# In-memory sessions: {token: {username, role, permissions, expires}}
+_sessions: Dict[str, Dict[str, Any]] = {}
+
+# ---------------------------------------------------------------------------
+# Data directory + default seed
+# ---------------------------------------------------------------------------
+
+USERS_FILE = DATA_DIR / "users.json"
+ROLES_FILE = DATA_DIR / "roles.json"
 
 
-def verify_api_key(request: Request) -> None:
-    key = request.headers.get("X-API-Key", "")
-    if key != API_KEY:
-        raise HTTPException(status_code=401, detail="Invalid or missing API key")
+def _ensure_data_dir() -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _hash_password(password: str) -> str:
+    salt = secrets.token_hex(16)
+    digest = hashlib.sha256((salt + password).encode()).hexdigest()
+    return f"{salt}:{digest}"
+
+
+def _verify_password(password: str, stored: str) -> bool:
+    try:
+        salt, digest = stored.split(":", 1)
+        expected = hashlib.sha256((salt + password).encode()).hexdigest()
+        return hmac.compare_digest(expected, digest)
+    except Exception:
+        return False
+
+
+def _read_users() -> Dict[str, Any]:
+    if not USERS_FILE.exists():
+        return {}
+    with open(USERS_FILE) as f:
+        return json.load(f)
+
+
+def _write_users(users: Dict[str, Any]) -> None:
+    with open(USERS_FILE, "w") as f:
+        json.dump(users, f, indent=2)
+
+
+def _read_roles() -> Dict[str, Any]:
+    if not ROLES_FILE.exists():
+        return {}
+    with open(ROLES_FILE) as f:
+        return json.load(f)
+
+
+def _write_roles(roles: Dict[str, Any]) -> None:
+    with open(ROLES_FILE, "w") as f:
+        json.dump(roles, f, indent=2)
+
+
+def _seed_defaults() -> None:
+    _ensure_data_dir()
+
+    # Seed roles
+    if not ROLES_FILE.exists():
+        _write_roles(DEFAULT_ROLES)
+
+    # Seed initial admin user
+    if not USERS_FILE.exists():
+        users = {
+            "rickyrianto": {
+                "password": _hash_password("tify2024secret"),
+                "role": "admin",
+            }
+        }
+        _write_users(users)
+
+
+def _get_permissions(role: str) -> List[str]:
+    roles = _read_roles()
+    return roles.get(role, {}).get("permissions", [])
+
+
+# ---------------------------------------------------------------------------
+# Auth helpers / dependencies
+# ---------------------------------------------------------------------------
+
+
+def get_current_user(request: Request) -> Dict[str, Any]:
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
+    token = auth[len("Bearer "):]
+    session = _sessions.get(token)
+    if not session:
+        raise HTTPException(status_code=401, detail="Invalid or expired session token")
+    if session["expires"] < time.time():
+        del _sessions[token]
+        raise HTTPException(status_code=401, detail="Session expired")
+    return session
+
+
+def require_admin(user: Dict[str, Any] = Depends(get_current_user)) -> Dict[str, Any]:
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return user
 
 
 # ---------------------------------------------------------------------------
 # Pydantic models
 # ---------------------------------------------------------------------------
+
+
+class LoginBody(BaseModel):
+    username: str
+    password: str
+
+
+class UserCreate(BaseModel):
+    username: str
+    password: str
+    role: str
+
+
+class UserUpdate(BaseModel):
+    password: Optional[str] = None
+    role: Optional[str] = None
+
+
+class RoleUpdate(BaseModel):
+    permissions: List[str]
 
 
 class AgentCreate(BaseModel):
@@ -136,7 +267,7 @@ class AgentUpdate(BaseModel):
 
 
 class CronJobCreate(BaseModel):
-    schedule: str          # "0 9 * * *"
+    schedule: str
     command: str
     agent: str
 
@@ -145,6 +276,134 @@ class CronJobUpdate(BaseModel):
     schedule: Optional[str] = None
     command: Optional[str] = None
     agent: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# AUTH endpoints
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/auth/login")
+def login(body: LoginBody):
+    users = _read_users()
+    user = users.get(body.username)
+    if not user or not _verify_password(body.password, user["password"]):
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+
+    role = user.get("role", "member")
+    permissions = _get_permissions(role)
+
+    token = secrets.token_urlsafe(32)
+    _sessions[token] = {
+        "username": body.username,
+        "role": role,
+        "permissions": permissions,
+        "expires": time.time() + SESSION_TTL,
+    }
+    return {
+        "token": token,
+        "username": body.username,
+        "role": role,
+        "permissions": permissions,
+    }
+
+
+@app.get("/api/auth/me")
+def auth_me(user: Dict[str, Any] = Depends(get_current_user)):
+    return {
+        "username": user["username"],
+        "role": user["role"],
+        "permissions": user["permissions"],
+    }
+
+
+@app.post("/api/auth/logout")
+def logout(request: Request, user: Dict[str, Any] = Depends(get_current_user)):
+    auth = request.headers.get("Authorization", "")
+    token = auth[len("Bearer "):]
+    _sessions.pop(token, None)
+    return {"success": True}
+
+
+# ---------------------------------------------------------------------------
+# USERS endpoints (admin only)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/users")
+def list_users(admin: Dict[str, Any] = Depends(require_admin)):
+    users = _read_users()
+    return [
+        {"username": uname, "role": udata.get("role", "member")}
+        for uname, udata in users.items()
+    ]
+
+
+@app.post("/api/users")
+def create_user(body: UserCreate, admin: Dict[str, Any] = Depends(require_admin)):
+    users = _read_users()
+    if body.username in users:
+        raise HTTPException(status_code=409, detail=f"User '{body.username}' already exists")
+    roles = _read_roles()
+    if body.role not in roles:
+        raise HTTPException(status_code=400, detail=f"Role '{body.role}' does not exist")
+    users[body.username] = {
+        "password": _hash_password(body.password),
+        "role": body.role,
+    }
+    _write_users(users)
+    return {"success": True, "username": body.username, "role": body.role}
+
+
+@app.put("/api/users/{username}")
+def update_user(username: str, body: UserUpdate, admin: Dict[str, Any] = Depends(require_admin)):
+    users = _read_users()
+    if username not in users:
+        raise HTTPException(status_code=404, detail=f"User '{username}' not found")
+    if body.role is not None:
+        roles = _read_roles()
+        if body.role not in roles:
+            raise HTTPException(status_code=400, detail=f"Role '{body.role}' does not exist")
+        users[username]["role"] = body.role
+    if body.password is not None:
+        users[username]["password"] = _hash_password(body.password)
+    _write_users(users)
+    return {"success": True, "username": username, "role": users[username]["role"]}
+
+
+@app.delete("/api/users/{username}")
+def delete_user(username: str, admin: Dict[str, Any] = Depends(require_admin)):
+    if username == admin["username"]:
+        raise HTTPException(status_code=400, detail="Cannot delete your own account")
+    users = _read_users()
+    if username not in users:
+        raise HTTPException(status_code=404, detail=f"User '{username}' not found")
+    del users[username]
+    _write_users(users)
+    return {"success": True, "deleted": username}
+
+
+# ---------------------------------------------------------------------------
+# ROLES endpoints (admin only)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/roles")
+def list_roles(admin: Dict[str, Any] = Depends(require_admin)):
+    return _read_roles()
+
+
+@app.put("/api/roles/{role}")
+def update_role(role: str, body: RoleUpdate, admin: Dict[str, Any] = Depends(require_admin)):
+    roles = _read_roles()
+    if role not in roles:
+        raise HTTPException(status_code=404, detail=f"Role '{role}' not found")
+    if role == "admin":
+        # Admin always keeps all permissions — cannot be restricted
+        body.permissions = list(DEFAULT_ROLES["admin"]["permissions"])
+    roles[role]["permissions"] = body.permissions
+    _write_roles(roles)
+    return {"success": True, "role": role, "permissions": body.permissions}
 
 
 # ---------------------------------------------------------------------------
@@ -227,10 +486,7 @@ def _list_configs() -> List[str]:
     base = Path(BASE_BOT_DIR)
     if not base.exists():
         return []
-    return [
-        p.stem.removeprefix("config-")
-        for p in base.glob("config-*.json")
-    ]
+    return [p.stem.removeprefix("config-") for p in base.glob("config-*.json")]
 
 
 # ---------------------------------------------------------------------------
@@ -262,7 +518,6 @@ def _write_crontab(lines: List[str]) -> None:
 
 
 def _parse_cron_jobs(lines: List[str]) -> List[Dict[str, Any]]:
-    """Parse crontab lines into job dicts, pairing agent tags with their job line."""
     jobs = []
     pending_agent = None
     raw_index = 0
@@ -303,8 +558,8 @@ def _rebuild_crontab_lines(jobs: List[Dict[str, Any]]) -> List[str]:
 # ---------------------------------------------------------------------------
 
 
-@app.get("/api/agents", dependencies=[Depends(verify_api_key)])
-def list_agents():
+@app.get("/api/agents")
+def list_agents(user: Dict[str, Any] = Depends(get_current_user)):
     ids = _list_configs()
     agents = []
     for iid in ids:
@@ -317,8 +572,8 @@ def list_agents():
     return agents
 
 
-@app.post("/api/agents", dependencies=[Depends(verify_api_key)])
-def create_agent(body: AgentCreate):
+@app.post("/api/agents")
+def create_agent(body: AgentCreate, user: Dict[str, Any] = Depends(get_current_user)):
     iid = body.instance_id.strip().lower()
     if not re.match(r"^[a-z0-9_-]+$", iid):
         raise HTTPException(400, "instance_id must be lowercase alphanumeric/dash/underscore")
@@ -339,11 +594,9 @@ def create_agent(body: AgentCreate):
 
     _write_config(iid, cfg)
 
-    # Create instance directories
     for subdir in ["memory", "output"]:
         Path(BASE_BOT_DIR, "instances", iid, subdir).mkdir(parents=True, exist_ok=True)
 
-    # Create & start systemd service
     try:
         _create_systemd_service(iid, body.bot_name)
         _systemctl("start", iid)
@@ -353,8 +606,8 @@ def create_agent(body: AgentCreate):
     return {"success": True, "agent": cfg}
 
 
-@app.put("/api/agents/{agent_id}", dependencies=[Depends(verify_api_key)])
-def update_agent(agent_id: str, body: AgentUpdate):
+@app.put("/api/agents/{agent_id}")
+def update_agent(agent_id: str, body: AgentUpdate, user: Dict[str, Any] = Depends(get_current_user)):
     cfg = _read_config(agent_id)
     if body.bot_name is not None:
         cfg["bot_name"] = body.bot_name
@@ -371,7 +624,6 @@ def update_agent(agent_id: str, body: AgentUpdate):
 
     _write_config(agent_id, cfg)
 
-    # Update service description if name changed
     if body.bot_name is not None:
         try:
             _create_systemd_service(agent_id, cfg["bot_name"])
@@ -382,11 +634,11 @@ def update_agent(agent_id: str, body: AgentUpdate):
     return {"success": True, "agent": cfg}
 
 
-@app.delete("/api/agents/{agent_id}", dependencies=[Depends(verify_api_key)])
-def delete_agent(agent_id: str):
+@app.delete("/api/agents/{agent_id}")
+def delete_agent(agent_id: str, user: Dict[str, Any] = Depends(get_current_user)):
     if agent_id in PROTECTED_AGENTS:
         raise HTTPException(403, f"Cannot delete protected agent '{agent_id}'")
-    _read_config(agent_id)  # 404 if not found
+    _read_config(agent_id)
 
     try:
         _remove_systemd_service(agent_id)
@@ -402,16 +654,16 @@ def delete_agent(agent_id: str):
     return {"success": True, "deleted": agent_id}
 
 
-@app.post("/api/agents/{agent_id}/restart", dependencies=[Depends(verify_api_key)])
-def restart_agent(agent_id: str):
-    _read_config(agent_id)  # 404 check
+@app.post("/api/agents/{agent_id}/restart")
+def restart_agent(agent_id: str, user: Dict[str, Any] = Depends(get_current_user)):
+    _read_config(agent_id)
     result = _systemctl("restart", agent_id)
     return result
 
 
-@app.get("/api/agents/{agent_id}/logs", dependencies=[Depends(verify_api_key)])
-def get_agent_logs(agent_id: str):
-    _read_config(agent_id)  # 404 check
+@app.get("/api/agents/{agent_id}/logs")
+def get_agent_logs(agent_id: str, user: Dict[str, Any] = Depends(get_current_user)):
+    _read_config(agent_id)
     svc = _service_name(agent_id)
     try:
         result = subprocess.run(
@@ -434,8 +686,8 @@ def _memory_path(agent_id: str) -> Path:
     return Path(BASE_BOT_DIR, "instances", agent_id, "memory", f"{OWNER_ID}.json")
 
 
-@app.get("/api/agents/{agent_id}/memory", dependencies=[Depends(verify_api_key)])
-def get_memory(agent_id: str):
+@app.get("/api/agents/{agent_id}/memory")
+def get_memory(agent_id: str, user: Dict[str, Any] = Depends(get_current_user)):
     _read_config(agent_id)
     mp = _memory_path(agent_id)
     if not mp.exists():
@@ -446,8 +698,8 @@ def get_memory(agent_id: str):
     return {"messages": messages, "count": len(messages), "exists": True}
 
 
-@app.delete("/api/agents/{agent_id}/memory", dependencies=[Depends(verify_api_key)])
-def clear_memory(agent_id: str):
+@app.delete("/api/agents/{agent_id}/memory")
+def clear_memory(agent_id: str, user: Dict[str, Any] = Depends(get_current_user)):
     _read_config(agent_id)
     mp = _memory_path(agent_id)
     if mp.exists():
@@ -460,8 +712,8 @@ def clear_memory(agent_id: str):
 # ---------------------------------------------------------------------------
 
 
-@app.get("/api/cron", dependencies=[Depends(verify_api_key)])
-def list_cron(agent: Optional[str] = Query(default=None)):
+@app.get("/api/cron")
+def list_cron(agent: Optional[str] = Query(default=None), user: Dict[str, Any] = Depends(get_current_user)):
     lines = _read_crontab()
     jobs = _parse_cron_jobs(lines)
     if agent:
@@ -469,8 +721,8 @@ def list_cron(agent: Optional[str] = Query(default=None)):
     return {"jobs": jobs}
 
 
-@app.post("/api/cron", dependencies=[Depends(verify_api_key)])
-def add_cron(body: CronJobCreate):
+@app.post("/api/cron")
+def add_cron(body: CronJobCreate, user: Dict[str, Any] = Depends(get_current_user)):
     lines = _read_crontab()
     jobs = _parse_cron_jobs(lines)
     new_job = {
@@ -485,8 +737,8 @@ def add_cron(body: CronJobCreate):
     return {"success": True, "job": new_job}
 
 
-@app.put("/api/cron/{index}", dependencies=[Depends(verify_api_key)])
-def update_cron(index: int, body: CronJobUpdate):
+@app.put("/api/cron/{index}")
+def update_cron(index: int, body: CronJobUpdate, user: Dict[str, Any] = Depends(get_current_user)):
     lines = _read_crontab()
     jobs = _parse_cron_jobs(lines)
     if index < 0 or index >= len(jobs):
@@ -504,8 +756,8 @@ def update_cron(index: int, body: CronJobUpdate):
     return {"success": True, "job": job}
 
 
-@app.delete("/api/cron/{index}", dependencies=[Depends(verify_api_key)])
-def delete_cron(index: int):
+@app.delete("/api/cron/{index}")
+def delete_cron(index: int, user: Dict[str, Any] = Depends(get_current_user)):
     lines = _read_crontab()
     jobs = _parse_cron_jobs(lines)
     if index < 0 or index >= len(jobs):
@@ -524,13 +776,12 @@ def _output_dir(agent_id: str) -> Path:
     return Path(BASE_BOT_DIR, "instances", agent_id, "output")
 
 
-@app.get("/api/agents/{agent_id}/files", dependencies=[Depends(verify_api_key)])
-def list_files(agent_id: str, path: str = Query(default="")):
+@app.get("/api/agents/{agent_id}/files")
+def list_files(agent_id: str, path: str = Query(default=""), user: Dict[str, Any] = Depends(get_current_user)):
     _read_config(agent_id)
     base = _output_dir(agent_id)
     target = (base / path).resolve() if path else base.resolve()
 
-    # Security: prevent path traversal
     try:
         target.relative_to(base.resolve())
     except ValueError:
@@ -554,8 +805,8 @@ def list_files(agent_id: str, path: str = Query(default="")):
     return {"files": files}
 
 
-@app.get("/api/agents/{agent_id}/files/download", dependencies=[Depends(verify_api_key)])
-def download_file(agent_id: str, path: str = Query(...)):
+@app.get("/api/agents/{agent_id}/files/download")
+def download_file(agent_id: str, path: str = Query(...), user: Dict[str, Any] = Depends(get_current_user)):
     _read_config(agent_id)
     base = _output_dir(agent_id)
     target = (base / path).resolve()
@@ -576,8 +827,8 @@ def download_file(agent_id: str, path: str = Query(...)):
 # ---------------------------------------------------------------------------
 
 
-@app.get("/api/skills", dependencies=[Depends(verify_api_key)])
-def list_skills():
+@app.get("/api/skills")
+def list_skills(user: Dict[str, Any] = Depends(get_current_user)):
     skills_dir = Path.home() / ".claude" / "skills"
     if not skills_dir.exists():
         return {"skills": []}
@@ -601,8 +852,8 @@ def list_skills():
 # ---------------------------------------------------------------------------
 
 
-@app.get("/api/models", dependencies=[Depends(verify_api_key)])
-def list_models():
+@app.get("/api/models")
+def list_models(user: Dict[str, Any] = Depends(get_current_user)):
     import urllib.error
     import urllib.request
 
@@ -625,8 +876,8 @@ def list_models():
 # ---------------------------------------------------------------------------
 
 
-@app.get("/api/status", dependencies=[Depends(verify_api_key)])
-def get_status():
+@app.get("/api/status")
+def get_status(user: Dict[str, Any] = Depends(get_current_user)):
     # Uptime
     try:
         with open("/proc/uptime") as f:
@@ -712,8 +963,8 @@ def get_status():
 # ---------------------------------------------------------------------------
 
 
-@app.get("/api/presets", dependencies=[Depends(verify_api_key)])
-def get_presets():
+@app.get("/api/presets")
+def get_presets(user: Dict[str, Any] = Depends(get_current_user)):
     return {"presets": AGENT_PRESETS}
 
 
@@ -737,6 +988,8 @@ def serve_index():
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
+
+_seed_defaults()
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8080, reload=False)

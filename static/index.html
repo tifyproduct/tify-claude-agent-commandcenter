@@ -14,6 +14,24 @@
     .log-output { font-family: 'Courier New', monospace; font-size: 0.75rem; line-height: 1.4; }
     .bubble-user { background: #4f46e5; border-radius: 18px 18px 4px 18px; }
     .bubble-assistant { background: #1f2937; border-radius: 18px 18px 18px 4px; border: 1px solid #374151; }
+
+    /* Heartbeat animations */
+    @keyframes pulse-blue   { 0%,100%{opacity:.5;transform:scale(1)}   50%{opacity:1;transform:scale(1.35)} }
+    @keyframes pulse-orange { 0%,100%{opacity:.5;transform:scale(1)}   50%{opacity:1;transform:scale(1.35)} }
+    @keyframes pulse-green  { 0%,100%{opacity:.5;transform:scale(1)}   50%{opacity:1;transform:scale(1.35)} }
+    @keyframes pulse-pink   { 0%,100%{opacity:.5;transform:scale(1)}   50%{opacity:1;transform:scale(1.35)} }
+    @keyframes pulse-cyan   { 0%,100%{opacity:.5;transform:scale(1)}   50%{opacity:1;transform:scale(1.35)} }
+    @keyframes pulse-purple { 0%,100%{opacity:.5;transform:scale(1)}   50%{opacity:1;transform:scale(1.35)} }
+    @keyframes pulse-yellow { 0%,100%{opacity:.5;transform:scale(1)}   50%{opacity:1;transform:scale(1.35)} }
+
+    .hb-general { animation: pulse-blue   2s   ease-in-out infinite; background:#3b82f6; }
+    .hb-product  { animation: pulse-orange 1.4s ease-in-out infinite; background:#f97316; }
+    .hb-finance  { animation: pulse-green  3s   ease-in-out infinite; background:#22c55e; }
+    .hb-social   { animation: pulse-pink   1.2s ease-in-out infinite; background:#ec4899; }
+    .hb-dev      { animation: pulse-cyan   1.6s ease-in-out infinite; background:#06b6d4; }
+    .hb-marketing{ animation: pulse-purple 1.3s ease-in-out infinite; background:#a855f7; }
+    .hb-research { animation: pulse-yellow 4s   ease-in-out infinite; background:#eab308; }
+    .hb-default  { animation: pulse-blue   2s   ease-in-out infinite; background:#6366f1; }
   </style>
   <script>
     tailwind.config = {
@@ -41,29 +59,50 @@
           <p class="text-sm text-indigo-400 font-medium">Command Center</p>
         </div>
       </div>
-      <p class="text-gray-400 text-sm text-center mb-6">Enter your backend URL and API key to continue</p>
+      <p class="text-gray-400 text-sm text-center mb-6">Sign in to manage your agents</p>
       <form @submit.prevent="login()">
+        <!-- Backend URL (hidden by default, toggled by gear) -->
+        <div x-show="showBackendInput" class="mb-3">
+          <input
+            type="url"
+            x-model="backendUrl"
+            placeholder="Backend URL (e.g. https://agent.tify.my.id)"
+            class="w-full bg-gray-700 border border-gray-600 rounded-lg px-4 py-3 text-gray-100 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent text-sm"
+          />
+        </div>
         <input
-          type="url"
-          x-model="backendUrl"
-          placeholder="Backend URL (e.g. http://213.136.91.212:8080)"
+          type="text"
+          x-model="loginUsername"
+          placeholder="Username"
+          autocomplete="username"
           class="w-full bg-gray-700 border border-gray-600 rounded-lg px-4 py-3 text-gray-100 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent mb-3"
+          autofocus
         />
         <input
           type="password"
-          x-model="loginKey"
-          placeholder="API Key"
+          x-model="loginPassword"
+          placeholder="Password"
+          autocomplete="current-password"
           class="w-full bg-gray-700 border border-gray-600 rounded-lg px-4 py-3 text-gray-100 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent mb-4"
-          autofocus
         />
         <button
           type="submit"
-          class="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-3 rounded-lg transition-colors"
+          :disabled="loggingIn"
+          class="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 text-white font-semibold py-3 rounded-lg transition-colors"
         >
-          Sign In
+          <span x-text="loggingIn ? 'Signing in…' : 'Sign In'"></span>
         </button>
       </form>
       <p x-show="loginError" class="text-red-400 text-sm text-center mt-3" x-text="loginError"></p>
+      <!-- Gear icon to toggle backend URL -->
+      <div class="mt-5 flex justify-center">
+        <button
+          type="button"
+          @click="showBackendInput = !showBackendInput"
+          class="text-gray-600 hover:text-gray-400 transition-colors text-lg"
+          title="Configure backend URL"
+        >⚙</button>
+      </div>
     </div>
   </div>
 </div>
@@ -93,6 +132,9 @@
           </span>
         </template>
       </div>
+      <!-- User info -->
+      <span class="text-xs text-gray-500" x-text="currentUser?.username"></span>
+      <span class="text-xs px-2 py-0.5 rounded-full bg-indigo-900/60 text-indigo-300 border border-indigo-700 capitalize" x-text="currentUser?.role"></span>
       <button @click="logout()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors">Sign out</button>
     </div>
   </header>
@@ -123,6 +165,7 @@
 
         <!-- Add Agent -->
         <button
+          x-show="hasPermission('agents')"
           @click="openAddAgentModal()"
           class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-indigo-400 hover:bg-gray-700 hover:text-indigo-300 transition-colors mt-1"
         >
@@ -136,22 +179,19 @@
       <!-- Divider -->
       <div class="mx-4 border-t border-gray-700 my-2"></div>
 
-      <!-- Nav items -->
+      <!-- Nav items (permission-gated) -->
       <div class="px-3 pb-4 space-y-0.5">
-        <button
-          @click="navigate('skills')"
-          class="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors text-left"
-          :class="currentPage === 'skills' ? 'bg-indigo-600 text-white' : 'text-gray-300 hover:bg-gray-700'"
-        >
-          <span>🧩</span> Skills
-        </button>
-        <button
-          @click="navigate('status')"
-          class="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors text-left"
-          :class="currentPage === 'status' ? 'bg-indigo-600 text-white' : 'text-gray-300 hover:bg-gray-700'"
-        >
-          <span>🖥️</span> VPS Status
-        </button>
+        <template x-for="item in navItems" :key="item.page">
+          <button
+            x-show="hasPermission(item.permission)"
+            @click="navigate(item.page)"
+            class="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors text-left"
+            :class="currentPage === item.page ? 'bg-indigo-600 text-white' : 'text-gray-300 hover:bg-gray-700'"
+          >
+            <span x-text="item.icon"></span>
+            <span x-text="item.label"></span>
+          </button>
+        </template>
       </div>
     </aside>
 
@@ -182,6 +222,19 @@
                 : 'bg-red-900/60 text-red-400 border border-red-700'"
               x-text="selectedAgent?.status || 'unknown'"
             ></span>
+            <!-- Heartbeat (active agents only) -->
+            <template x-if="selectedAgent?.status === 'active'">
+              <div class="flex items-center gap-2 ml-2">
+                <span
+                  class="w-2.5 h-2.5 rounded-full inline-block"
+                  :class="'hb-' + (selectedAgent?.preset || 'default')"
+                ></span>
+                <span
+                  class="text-xs text-gray-400 italic transition-all"
+                  x-text="agentTagline"
+                ></span>
+              </div>
+            </template>
           </div>
           <button
             @click="restartAgent(selectedAgent?.instance_id)"
@@ -217,7 +270,6 @@
 
           <!-- Overview Tab -->
           <div x-show="agentTab === 'overview'" class="max-w-2xl space-y-6">
-            <!-- Info cards -->
             <div class="grid grid-cols-2 gap-4">
               <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
                 <p class="text-xs text-gray-500 mb-1">Preset</p>
@@ -430,10 +482,8 @@
                       class="text-xs px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded transition-colors">Open</button>
                   </template>
                   <template x-if="!file.is_dir">
-                    <a :href="'/api/agents/' + selectedAgent?.instance_id + '/files/download?path=' + encodeURIComponent(file.path)"
-                      :download="file.name"
-                      @click.prevent="downloadFile(file)"
-                      class="text-xs px-2 py-1 bg-indigo-700 hover:bg-indigo-600 rounded transition-colors">Download</a>
+                    <button @click="downloadFile(file)"
+                      class="text-xs px-2 py-1 bg-indigo-700 hover:bg-indigo-600 rounded transition-colors">Download</button>
                   </template>
                 </div>
               </template>
@@ -495,7 +545,6 @@
           <p class="text-xs text-gray-500">Auto-refreshes every 30s</p>
         </div>
 
-        <!-- Stat cards -->
         <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
           <div class="bg-gray-800 rounded-xl border border-gray-700 p-5">
             <p class="text-xs text-gray-500 mb-1">⏱️ Uptime</p>
@@ -506,7 +555,6 @@
             <p class="text-xl font-bold text-gray-100" x-text="vpsStatus.memory ? vpsStatus.memory.percent + '%' : '…'"></p>
             <p class="text-xs text-gray-500 mt-1"
                x-text="vpsStatus.memory ? formatBytes(vpsStatus.memory.used) + ' / ' + formatBytes(vpsStatus.memory.total) : ''"></p>
-            <!-- Memory bar -->
             <div class="mt-2 h-1.5 bg-gray-700 rounded-full overflow-hidden">
               <div class="h-full rounded-full transition-all"
                    :class="(vpsStatus.memory?.percent||0) > 80 ? 'bg-red-500' : (vpsStatus.memory?.percent||0) > 60 ? 'bg-yellow-500' : 'bg-green-500'"
@@ -532,7 +580,6 @@
           </div>
         </div>
 
-        <!-- Agents table -->
         <h3 class="font-semibold text-gray-300 mb-3">Agents Overview</h3>
         <div class="bg-gray-800 rounded-xl border border-gray-700 overflow-hidden">
           <table class="w-full text-sm">
@@ -554,11 +601,16 @@
                   <td class="px-4 py-3 text-gray-400 capitalize" x-text="agent.preset"></td>
                   <td class="px-4 py-3 text-gray-400" x-text="agent.model"></td>
                   <td class="px-4 py-3">
-                    <span class="px-2 py-0.5 rounded-full text-xs font-medium"
-                      :class="agent.status === 'active'
-                        ? 'bg-green-900/60 text-green-400'
-                        : 'bg-red-900/60 text-red-400'"
-                      x-text="agent.status"></span>
+                    <div class="flex items-center gap-2">
+                      <span class="px-2 py-0.5 rounded-full text-xs font-medium"
+                        :class="agent.status === 'active'
+                          ? 'bg-green-900/60 text-green-400'
+                          : 'bg-red-900/60 text-red-400'"
+                        x-text="agent.status"></span>
+                      <template x-if="agent.status === 'active'">
+                        <span class="w-2 h-2 rounded-full inline-block" :class="'hb-' + (agent.preset || 'default')"></span>
+                      </template>
+                    </div>
                   </td>
                   <td class="px-4 py-3 text-right">
                     <button @click="restartAgent(agent.instance_id)"
@@ -568,6 +620,100 @@
               </template>
             </tbody>
           </table>
+        </div>
+      </div>
+
+      <!-- ─── USERS PAGE ─── -->
+      <div x-show="currentPage === 'users'" class="p-6">
+        <div class="flex items-center justify-between mb-6">
+          <h2 class="text-xl font-bold text-gray-100">User Management</h2>
+          <button @click="openUserModal(null)"
+            class="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 rounded-lg text-sm font-medium transition-colors">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+            </svg>
+            Add User
+          </button>
+        </div>
+
+        <div class="bg-gray-800 rounded-xl border border-gray-700 overflow-hidden">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="border-b border-gray-700 text-xs text-gray-500 uppercase">
+                <th class="px-4 py-3 text-left">Username</th>
+                <th class="px-4 py-3 text-left">Role</th>
+                <th class="px-4 py-3 text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              <template x-for="u in userList" :key="u.username">
+                <tr class="border-b border-gray-700/50 last:border-0 hover:bg-gray-700/20">
+                  <td class="px-4 py-3 font-medium">
+                    <span x-text="u.username"></span>
+                    <span x-show="u.username === currentUser?.username" class="ml-2 text-xs text-indigo-400">(you)</span>
+                  </td>
+                  <td class="px-4 py-3">
+                    <span class="px-2 py-0.5 rounded-full text-xs font-medium bg-indigo-900/50 text-indigo-300 border border-indigo-700 capitalize" x-text="u.role"></span>
+                  </td>
+                  <td class="px-4 py-3 text-right whitespace-nowrap">
+                    <button @click="openUserModal(u)"
+                      class="text-xs px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded mr-1 transition-colors">Edit</button>
+                    <button
+                      x-show="u.username !== currentUser?.username"
+                      @click="deleteUser(u.username)"
+                      class="text-xs px-2 py-1 bg-red-900/50 hover:bg-red-800 rounded text-red-400 transition-colors">Delete</button>
+                  </td>
+                </tr>
+              </template>
+              <tr x-show="userList.length === 0">
+                <td colspan="3" class="px-4 py-8 text-center text-gray-600">No users found</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- ─── ROLES PAGE ─── -->
+      <div x-show="currentPage === 'roles'" class="p-6">
+        <div class="flex items-center justify-between mb-6">
+          <h2 class="text-xl font-bold text-gray-100">Role Management</h2>
+          <p class="text-sm text-gray-500">Define permissions per role</p>
+        </div>
+
+        <div class="space-y-4">
+          <template x-for="(roleData, roleName) in rolesMap" :key="roleName">
+            <div class="bg-gray-800 rounded-xl border border-gray-700 p-6">
+              <div class="flex items-center justify-between mb-4">
+                <div>
+                  <h3 class="font-semibold text-gray-100 capitalize" x-text="roleData.name || roleName"></h3>
+                  <p x-show="roleName === 'admin'" class="text-xs text-gray-500 mt-0.5">Admin always has all permissions</p>
+                </div>
+                <button
+                  x-show="roleName !== 'admin'"
+                  @click="saveRole(roleName)"
+                  class="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 rounded-lg text-sm font-medium transition-colors">
+                  Save
+                </button>
+              </div>
+              <div class="flex flex-wrap gap-4">
+                <template x-for="perm in allPermissions" :key="perm">
+                  <label class="flex items-center gap-2 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      :checked="roleName === 'admin' || (roleData.permissions || []).includes(perm)"
+                      :disabled="roleName === 'admin'"
+                      @change="toggleRolePermission(roleName, perm, $event.target.checked)"
+                      class="w-4 h-4 rounded border-gray-500 bg-gray-700 text-indigo-600 focus:ring-indigo-500 disabled:opacity-50"
+                    />
+                    <span class="text-sm text-gray-300 capitalize" x-text="perm"></span>
+                  </label>
+                </template>
+              </div>
+            </div>
+          </template>
+          <div x-show="Object.keys(rolesMap).length === 0" class="text-center py-16 text-gray-600">
+            <p>No roles defined</p>
+          </div>
         </div>
       </div>
 
@@ -653,6 +799,58 @@
   </div>
 </div>
 
+<!-- ═══════════════════ USER MODAL ═══════════════════ -->
+<div x-show="showUserModal"
+  class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+  @click.self="showUserModal = false">
+  <div class="bg-gray-800 rounded-2xl border border-gray-700 w-full max-w-md shadow-2xl">
+    <div class="flex items-center justify-between px-6 py-4 border-b border-gray-700">
+      <h3 class="text-base font-semibold" x-text="userForm.isEdit ? 'Edit User' : 'Add User'"></h3>
+      <button @click="showUserModal = false" class="text-gray-500 hover:text-gray-300">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+        </svg>
+      </button>
+    </div>
+    <div class="p-6 space-y-4">
+      <div x-show="!userForm.isEdit">
+        <label class="block text-xs text-gray-400 mb-1">Username <span class="text-red-400">*</span></label>
+        <input x-model="userForm.username" type="text"
+          class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+      </div>
+      <div x-show="userForm.isEdit">
+        <p class="text-sm text-gray-400">Editing: <span class="font-semibold text-gray-200" x-text="userForm.username"></span></p>
+      </div>
+      <div>
+        <label class="block text-xs text-gray-400 mb-1">
+          <span x-text="userForm.isEdit ? 'New Password (leave blank to keep)' : 'Password *'"></span>
+        </label>
+        <input x-model="userForm.password" type="password"
+          :placeholder="userForm.isEdit ? 'Leave blank to keep current' : 'Enter password'"
+          class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+      </div>
+      <div>
+        <label class="block text-xs text-gray-400 mb-1">Role <span class="text-red-400">*</span></label>
+        <select x-model="userForm.role"
+          class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+          <template x-for="(roleData, roleName) in rolesMap" :key="roleName">
+            <option :value="roleName" x-text="roleData.name || roleName"></option>
+          </template>
+        </select>
+      </div>
+      <div class="flex justify-end gap-3 pt-2">
+        <button type="button" @click="showUserModal = false"
+          class="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm transition-colors">Cancel</button>
+        <button type="button" @click="submitUserModal()"
+          class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 rounded-lg text-sm font-medium transition-colors"
+          :disabled="savingUser">
+          <span x-text="savingUser ? 'Saving…' : (userForm.isEdit ? 'Update' : 'Create User')"></span>
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- ═══════════════════ CRON MODAL ═══════════════════ -->
 <div x-show="showCronModal"
   class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
@@ -667,7 +865,6 @@
       </button>
     </div>
     <div class="p-6 space-y-4">
-      <!-- Cron fields -->
       <div>
         <label class="block text-xs text-gray-400 mb-2">Schedule</label>
         <div class="grid grid-cols-5 gap-2">
@@ -702,7 +899,6 @@
             <p class="text-xs text-gray-600 text-center mt-1">weekday</p>
           </div>
         </div>
-        <!-- Preview -->
         <div class="mt-3 bg-gray-900 rounded-lg px-4 py-2.5 border border-gray-700">
           <p class="text-xs text-gray-500 mb-0.5">Preview</p>
           <p class="font-mono text-sm text-indigo-300" x-text="cronPreview"></p>
@@ -716,7 +912,6 @@
           class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500" />
       </div>
 
-      <!-- Quick presets -->
       <div>
         <p class="text-xs text-gray-500 mb-2">Quick presets:</p>
         <div class="flex flex-wrap gap-2">
@@ -785,13 +980,28 @@
 </div>
 
 <script>
+// Heartbeat taglines per preset
+const PRESET_TAGLINES = {
+  general:   ['Ready to assist...', 'Listening...', 'At your service...'],
+  product:   ['Planning sprints...', 'Mapping roadmap...', 'Prioritizing features...'],
+  finance:   ['Crunching numbers...', 'Analyzing cash flow...', 'Reviewing P&L...'],
+  social:    ['Crafting content...', 'Trending now...', 'Engaging audience...'],
+  dev:       ['Compiling ideas...', 'Debugging flows...', 'Architecting solutions...'],
+  marketing: ['Generating leads...', 'Optimizing campaigns...', 'Boosting conversions...'],
+  research:  ['Gathering data...', 'Synthesizing insights...', 'Exploring patterns...'],
+};
+
 function app() {
   return {
     // Auth
     authenticated: false,
-    loginKey: '',
+    currentUser: null,
+    loginUsername: '',
+    loginPassword: '',
     backendUrl: localStorage.getItem('tify_backend_url') || 'https://agent.tify.my.id',
     loginError: '',
+    loggingIn: false,
+    showBackendInput: false,
 
     // Layout
     currentPage: 'home',
@@ -809,14 +1019,23 @@ function app() {
     agentFiles: [],
     filePath: '',
     logs: '',
+    userList: [],
+    rolesMap: {},
+
+    // Heartbeat
+    agentTagline: '',
+    _taglineInterval: null,
+    _taglineIndex: 0,
 
     // UI state
     restarting: false,
     saving: false,
     addingAgent: false,
     savingCron: false,
+    savingUser: false,
     showAddAgentModal: false,
     showCronModal: false,
+    showUserModal: false,
     toasts: [],
     confirm: { show: false, title: '', message: '', confirmText: 'Confirm', onConfirm: () => {} },
 
@@ -826,30 +1045,50 @@ function app() {
     cronForm: { index: null, minute: '*', hour: '*', day: '*', month: '*', weekday: '*', command: '' },
     cronPreview: '* * * * *',
     cronDescription: 'Every minute',
+    userForm: { isEdit: false, username: '', password: '', role: 'member' },
 
     // Constants
     ownerIdDisplay: '6165792902',
     protectedAgents: ['general'],
+    allPermissions: ['agents', 'skills', 'status', 'users', 'roles'],
+
+    navItems: [
+      { page: 'skills',  label: 'Skills',      icon: '🧩', permission: 'skills'  },
+      { page: 'status',  label: 'VPS Status',  icon: '🖥️', permission: 'status'  },
+      { page: 'users',   label: 'Users',       icon: '👤', permission: 'users'   },
+      { page: 'roles',   label: 'Roles',       icon: '🔑', permission: 'roles'   },
+    ],
 
     cronPresets: [
       { label: 'Every minute', m:'*', h:'*', d:'*', mo:'*', w:'*' },
-      { label: 'Every hour', m:'0', h:'*', d:'*', mo:'*', w:'*' },
-      { label: 'Daily 9am', m:'0', h:'9', d:'*', mo:'*', w:'*' },
+      { label: 'Every hour',   m:'0', h:'*', d:'*', mo:'*', w:'*' },
+      { label: 'Daily 9am',    m:'0', h:'9', d:'*', mo:'*', w:'*' },
       { label: 'Daily midnight', m:'0', h:'0', d:'*', mo:'*', w:'*' },
       { label: 'Every Mon 9am', m:'0', h:'9', d:'*', mo:'*', w:'1' },
-      { label: '1st of month', m:'0', h:'9', d:'1', mo:'*', w:'*' },
+      { label: '1st of month',  m:'0', h:'9', d:'1', mo:'*', w:'*' },
     ],
 
+    // ── Permission helper ──
+    hasPermission(perm) {
+      return (this.currentUser?.permissions || []).includes(perm);
+    },
+
     // ── Init ──
-    init() {
-      const key = localStorage.getItem('tify_api_key');
-      const url = localStorage.getItem('tify_backend_url');
-      if (key && url) {
-        this.loginKey = key;
-        this.backendUrl = url;
-        this.authenticated = true;
-        this.loadAll();
-        this.startAutoRefresh();
+    async init() {
+      const session = this._loadSession();
+      if (session) {
+        // Validate session with server
+        try {
+          const res = await this._rawApi('/api/auth/me', { headers: { Authorization: 'Bearer ' + session.token } });
+          if (res.ok) {
+            this.currentUser = { token: session.token, ...(await res.json()) };
+            this.authenticated = true;
+            await this.loadAll();
+            this.startAutoRefresh();
+            return;
+          }
+        } catch (e) {}
+        this._clearSession();
       }
     },
 
@@ -868,49 +1107,90 @@ function app() {
       }, 30000);
     },
 
+    // ── Session storage ──
+    _loadSession() {
+      try { return JSON.parse(localStorage.getItem('tify_session')); } catch { return null; }
+    },
+
+    _saveSession(data) {
+      localStorage.setItem('tify_session', JSON.stringify(data));
+      localStorage.setItem('tify_backend_url', this.backendUrl);
+    },
+
+    _clearSession() {
+      localStorage.removeItem('tify_session');
+    },
+
     // ── Auth ──
     async login() {
       this.loginError = '';
-      if (!this.backendUrl) { this.loginError = 'Please enter the backend URL.'; return; }
+      if (!this.loginUsername.trim()) { this.loginError = 'Please enter your username.'; return; }
+      if (!this.loginPassword) { this.loginError = 'Please enter your password.'; return; }
+      if (!this.backendUrl) { this.loginError = 'Backend URL is required.'; return; }
+      this.loggingIn = true;
       const base = this.backendUrl.replace(/\/$/, '');
       try {
-        const res = await this.api('/api/agents', {}, base);
+        const res = await fetch(base + '/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username: this.loginUsername, password: this.loginPassword }),
+        });
         if (res.ok) {
-          localStorage.setItem('tify_api_key', this.loginKey);
-          localStorage.setItem('tify_backend_url', base);
+          const data = await res.json();
           this.backendUrl = base;
+          this.currentUser = data;
+          this._saveSession(data);
           this.authenticated = true;
           await this.loadAll();
           this.startAutoRefresh();
         } else {
-          this.loginError = 'Invalid API key. Please try again.';
+          const err = await res.json().catch(() => ({}));
+          this.loginError = err.detail || 'Invalid username or password.';
         }
       } catch (e) {
         this.loginError = 'Connection failed. Check the backend URL and try again.';
+      } finally {
+        this.loggingIn = false;
       }
     },
 
-    logout() {
-      localStorage.removeItem('tify_api_key');
-      localStorage.removeItem('tify_backend_url');
+    async logout() {
+      try {
+        await this.api('/api/auth/logout', { method: 'POST' });
+      } catch (e) {}
+      this._clearSession();
       this.authenticated = false;
-      this.loginKey = '';
-      this.backendUrl = '';
+      this.currentUser = null;
+      this.loginUsername = '';
+      this.loginPassword = '';
+      this.agents = [];
+      this.selectedAgent = null;
+      this.currentPage = 'home';
     },
 
     // ── HTTP ──
-    async api(path, opts = {}, baseOverride) {
-      const base = (baseOverride ?? this.backendUrl ?? localStorage.getItem('tify_backend_url') ?? '').replace(/\/$/, '');
+    _rawApi(path, opts = {}) {
+      const base = (this.backendUrl || localStorage.getItem('tify_backend_url') || '').replace(/\/$/, '');
+      return fetch(base + path, opts);
+    },
+
+    async api(path, opts = {}) {
+      const token = this.currentUser?.token || '';
       const headers = {
         'Content-Type': 'application/json',
-        'X-API-Key': this.loginKey || localStorage.getItem('tify_api_key') || '',
+        'Authorization': token ? 'Bearer ' + token : '',
         ...(opts.headers || {}),
       };
-      return fetch(base + path, { ...opts, headers });
+      return this._rawApi(path, { ...opts, headers });
     },
 
     async apiJSON(path, opts = {}) {
       const res = await this.api(path, opts);
+      if (res.status === 401) {
+        this._clearSession();
+        this.authenticated = false;
+        throw new Error('Session expired. Please log in again.');
+      }
       if (!res.ok) {
         const err = await res.json().catch(() => ({ detail: res.statusText }));
         throw new Error(err.detail || 'Request failed');
@@ -940,6 +1220,8 @@ function app() {
       this.selectedAgent = null;
       if (page === 'skills') this.loadSkills();
       if (page === 'status') this.loadStatus();
+      if (page === 'users') this.loadUsers();
+      if (page === 'roles') this.loadRoles();
     },
 
     selectAgent(agent) {
@@ -959,6 +1241,20 @@ function app() {
       this.agentFiles = [];
       this.logs = '';
       this.filePath = '';
+      this._startHeartbeat(agent);
+    },
+
+    // ── Heartbeat ──
+    _startHeartbeat(agent) {
+      if (this._taglineInterval) clearInterval(this._taglineInterval);
+      if (agent.status !== 'active') { this.agentTagline = ''; return; }
+      const taglines = PRESET_TAGLINES[agent.preset] || PRESET_TAGLINES.general;
+      this._taglineIndex = 0;
+      this.agentTagline = taglines[0];
+      this._taglineInterval = setInterval(() => {
+        this._taglineIndex = (this._taglineIndex + 1) % taglines.length;
+        this.agentTagline = taglines[this._taglineIndex];
+      }, 3000);
     },
 
     onTabChange(tab) {
@@ -974,7 +1270,6 @@ function app() {
       try {
         const data = await this.apiJSON('/api/agents');
         this.agents = data;
-        // Sync selectedAgent status
         if (this.selectedAgent) {
           const updated = data.find(a => a.instance_id === this.selectedAgent.instance_id);
           if (updated) this.selectedAgent.status = updated.status;
@@ -1067,7 +1362,7 @@ function app() {
     async submitAddAgent() {
       this.addingAgent = true;
       try {
-        const data = await this.apiJSON('/api/agents', {
+        await this.apiJSON('/api/agents', {
           method: 'POST',
           body: JSON.stringify(this.addForm),
         });
@@ -1162,10 +1457,10 @@ function app() {
     },
 
     applyCronPreset(preset) {
-      this.cronForm.minute = preset.m;
-      this.cronForm.hour = preset.h;
-      this.cronForm.day = preset.d;
-      this.cronForm.month = preset.mo;
+      this.cronForm.minute  = preset.m;
+      this.cronForm.hour    = preset.h;
+      this.cronForm.day     = preset.d;
+      this.cronForm.month   = preset.mo;
       this.cronForm.weekday = preset.w;
       this.updateCronPreview();
     },
@@ -1238,9 +1533,9 @@ function app() {
       if (!this.selectedAgent) return;
       const base = (this.backendUrl || localStorage.getItem('tify_backend_url') || '').replace(/\/$/, '');
       const url = `${base}/api/agents/${this.selectedAgent.instance_id}/files/download?path=${encodeURIComponent(file.path)}`;
-      const key = this.loginKey || localStorage.getItem('tify_api_key') || '';
+      const token = this.currentUser?.token || '';
       try {
-        const res = await fetch(url, { headers: { 'X-API-Key': key } });
+        const res = await fetch(url, { headers: { 'Authorization': 'Bearer ' + token } });
         if (!res.ok) throw new Error('Download failed');
         const blob = await res.blob();
         const a = document.createElement('a');
@@ -1282,6 +1577,111 @@ function app() {
         this.vpsStatus = data;
       } catch (e) {
         this.toast('Failed to load status: ' + e.message, 'error');
+      }
+    },
+
+    // ── Users ──
+    async loadUsers() {
+      try {
+        const data = await this.apiJSON('/api/users');
+        this.userList = data;
+      } catch (e) {
+        this.toast('Failed to load users: ' + e.message, 'error');
+      }
+    },
+
+    openUserModal(user) {
+      if (user) {
+        this.userForm = { isEdit: true, username: user.username, password: '', role: user.role };
+      } else {
+        this.userForm = { isEdit: false, username: '', password: '', role: 'member' };
+      }
+      // ensure roles are loaded
+      if (Object.keys(this.rolesMap).length === 0) this.loadRoles();
+      this.showUserModal = true;
+    },
+
+    async submitUserModal() {
+      this.savingUser = true;
+      try {
+        if (this.userForm.isEdit) {
+          const payload = { role: this.userForm.role };
+          if (this.userForm.password) payload.password = this.userForm.password;
+          await this.apiJSON(`/api/users/${this.userForm.username}`, {
+            method: 'PUT',
+            body: JSON.stringify(payload),
+          });
+          this.toast('User updated', 'success');
+        } else {
+          if (!this.userForm.username.trim()) { this.toast('Username required', 'error'); return; }
+          if (!this.userForm.password) { this.toast('Password required', 'error'); return; }
+          await this.apiJSON('/api/users', {
+            method: 'POST',
+            body: JSON.stringify({
+              username: this.userForm.username,
+              password: this.userForm.password,
+              role: this.userForm.role,
+            }),
+          });
+          this.toast('User created', 'success');
+        }
+        this.showUserModal = false;
+        await this.loadUsers();
+      } catch (e) {
+        this.toast('Failed: ' + e.message, 'error');
+      } finally {
+        this.savingUser = false;
+      }
+    },
+
+    async deleteUser(username) {
+      this.askConfirm(
+        'Delete User',
+        `Are you sure you want to delete user "${username}"?`,
+        async () => {
+          try {
+            await this.apiJSON(`/api/users/${username}`, { method: 'DELETE' });
+            this.toast(`User '${username}' deleted`, 'success');
+            await this.loadUsers();
+          } catch (e) {
+            this.toast('Delete failed: ' + e.message, 'error');
+          }
+        },
+        'Delete'
+      );
+    },
+
+    // ── Roles ──
+    async loadRoles() {
+      try {
+        const data = await this.apiJSON('/api/roles');
+        this.rolesMap = data;
+      } catch (e) {
+        this.toast('Failed to load roles: ' + e.message, 'error');
+      }
+    },
+
+    toggleRolePermission(roleName, perm, checked) {
+      if (!this.rolesMap[roleName]) return;
+      const perms = [...(this.rolesMap[roleName].permissions || [])];
+      if (checked && !perms.includes(perm)) perms.push(perm);
+      if (!checked) {
+        const idx = perms.indexOf(perm);
+        if (idx !== -1) perms.splice(idx, 1);
+      }
+      this.rolesMap[roleName].permissions = perms;
+    },
+
+    async saveRole(roleName) {
+      const perms = this.rolesMap[roleName]?.permissions || [];
+      try {
+        await this.apiJSON(`/api/roles/${roleName}`, {
+          method: 'PUT',
+          body: JSON.stringify({ permissions: perms }),
+        });
+        this.toast(`Role '${roleName}' saved`, 'success');
+      } catch (e) {
+        this.toast('Failed to save role: ' + e.message, 'error');
       }
     },
 
