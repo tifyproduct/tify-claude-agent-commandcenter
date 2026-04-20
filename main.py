@@ -981,7 +981,10 @@ if static_dir.exists():
 def serve_index():
     index = static_dir / "index.html"
     if index.exists():
-        return FileResponse(str(index))
+        return FileResponse(
+            str(index),
+            headers={"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache"},
+        )
     return JSONResponse({"detail": "Frontend not found"}, status_code=404)
 
 
